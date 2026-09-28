@@ -16,4 +16,3 @@ export { RelatorioService } from "./RelatorioService";
 export { BeneficioService } from "./BeneficioService";
 export { DecisoesValidadasService } from "./DecisoesValidadasService";
 export { DescricaoIAService } from "./DescricaoIAService";
-export { MemoriaSTService } from "./MemoriaSTService";

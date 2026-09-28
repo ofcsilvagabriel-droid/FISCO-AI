@@ -18,8 +18,6 @@ import { mvaAjustadaPor, selecionarMVAAutopecas } from "@/modules/fiscal/engines
 import { ClassificationEngine } from "@/modules/fiscal/domain/engines/ClassificationEngine";
 import { DecisoesValidadasService } from "@/modules/fiscal/domain/services/DecisoesValidadasService";
 import { DescricaoIAService } from "@/modules/fiscal/domain/services/DescricaoIAService";
-import { MemoriaCalculoService } from "@/modules/fiscal/domain/services/MemoriaCalculoService";
-import { MemoriaSTService } from "@/modules/fiscal/domain/services/MemoriaSTService";
 import { CongelamentoService } from "@/modules/fiscal/domain/services/CongelamentoService";
 import MemoriaObsidian from "@/components/MemoriaObsidian";
 import { HistoricoApuracaoService } from "@/modules/fiscal/domain/services/HistoricoApuracaoService";
@@ -129,9 +127,8 @@ function upsertRegistroArquivo(arq, nota, produtos, calculos) {
         origem_calculo: c._congelado ? "CONGELADO"
           : c.memoria_apuracao ? (c.memoria_apuracao.origem_memoria === "ALTERADO_MANUAL" ? "MEMORIA_ALTERADA"
             : c.memoria_apuracao.origem_memoria === "CONGELADO_MANUAL_INALTERADO" ? "MEMORIA_CONGELADA" : "MEMORIA_AUTOMATICA")
-          : c.memoria_aplicada ? "MEMORIA_NCM" : "AUTOMATICO",
+          : "AUTOMATICO",
         versao_apuracao_ncm: c.memoria_apuracao?.versao_apuracao || null,
-        memoria_aplicada: c.memoria_aplicada ? { ncm: c.memoria_aplicada.ncm, tipo: c.memoria_aplicada.tipo_decisao, criado_em: c.memoria_aplicada.criado_em } : null,
         icms_foi_presumido: !!c.icms_foi_presumido,
         icms_proprio_presumido: !!c.icms_proprio_presumido,
         reducao_base: c.reducao_base ?? c.percentual_reducao ?? null,
@@ -354,7 +351,7 @@ function exportarArquivoPDF(empresa, mesAno, registros, options = {}) {
       startY: doc.lastAutoTable.finalY + 6,
       head: [["Resumo de métodos de cálculo", "Itens", "ICMS-ST / Antecipação"]],
       body: [
-        [`Calculados por PAUTA (PMC/PMPF informado no documento) — cálculo individual por produto: não usa memória de cálculos anteriores; cada ocorrência é recalculada conforme o PMC/PMPF da NF`, String(porPauta.length), fmt(somaST(porPauta))],
+        [`Calculados por PAUTA (PMC/PMPF informado no documento) — cálculo individual por produto: não reaproveita histórico; cada ocorrência é recalculada conforme o PMC/PMPF da NF`, String(porPauta.length), fmt(somaST(porPauta))],
         [`Calculados por método AUTOMÁTICO (MVA / base normal)`, String(automaticos.length), fmt(somaST(automaticos))],
         [`Cálculos CONGELADOS (decisão manual)`, String(congelados.length), fmt(somaST(congelados))],
       ],
@@ -1206,7 +1203,6 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
   // ============================================================
   const dmProduto = produto.decisao_manual || null;
   let decisaoManual = (dmProduto && dmProduto.modo && dmProduto.modo !== "AUTO") ? dmProduto : null;
-  let memoriaNcm = null;
   let versaoApuracao = null;
   // PAUTA (PMC/PMPF na NF): nunca usa memória — sempre recalcula conforme o
   // preço informado no próprio documento fiscal.
@@ -1214,7 +1210,7 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
   const descProdutoPauta = `${produto.descricao || ""} ${produto.info_adicional || ""}`;
   const bloquearMemoriaPauta = !!admissaoMemoria.admitida;
   if (bloquearMemoriaPauta) {
-    logTecnico.push(`[MEMORIA_PAUTA_IGNORADA] NCM ${produto.ncm || "—"} — produto com ${admissaoMemoria.tipo} (R$ ${Number(admissaoMemoria.valor || 0).toFixed(2)}) na NF: memória de cálculos ignorada, recálculo individual por pauta.`);
+    logTecnico.push(`[MEMORIA_PAUTA_IGNORADA] NCM ${produto.ncm || "—"} — produto com ${admissaoMemoria.tipo} (R$ ${Number(admissaoMemoria.valor || 0).toFixed(2)}) na NF: histórico protegido não reaplicado, recálculo individual por pauta.`);
   }
   if (!bloquearMemoriaPauta && !decisaoManual && !(dmProduto && dmProduto.modo === "AUTO")) {
     // 2) Histórico de apuração por NCM (ALTERADO > CONGELADO > AUTOMÁTICO)
@@ -1239,22 +1235,6 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
       });
     }
   }
-  if (!bloquearMemoriaPauta && !decisaoManual && !(dmProduto && dmProduto.modo === "AUTO")) {
-    memoriaNcm = MemoriaCalculoService.obterMemoriaPorNCM(produto.ncm, produto.empresa_id || null);
-    const aplicada = MemoriaCalculoService.aplicarMemoria(memoriaNcm);
-    if (aplicada && aplicada.modo !== "AUTO") {
-      decisaoManual = aplicada;
-      logTecnico.push(`[MEMORIA_APLICADA] NCM ${memoriaNcm.ncm} encontrado em memória de cálculos: tipo=${memoriaNcm.tipo_decisao}, MVA=${aplicada.mva_informada ?? "—"}, criado_em=${memoriaNcm.criado_em}, atualizado_em=${memoriaNcm.atualizado_em}.`);
-      alertas.push({
-        tipo: "MEMORIA_APLICADA",
-        mensagem: `Decisão memorizada para o NCM ${memoriaNcm.ncm} (${memoriaNcm.tipo_decisao}) aplicada automaticamente.`,
-        fundamento: memoriaNcm.fundamento,
-      });
-    } else {
-      memoriaNcm = null;
-    }
-  }
-
 
 
 
@@ -1386,7 +1366,6 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
     alertas: [ ...alertas, ...(obj.alertas||[]) ],
     validacoes: val,
     cesta_basica: cestaBasica,
-    memoria_aplicada: memoriaNcm || null,
     memoria_apuracao: versaoApuracao || null,
 
     icms_destacado_nf: icmsProprioFinal > 0,
@@ -2087,8 +2066,7 @@ function exportarCSV(nota, produtos, calculos = []) {
     const origem = congelado ? "CONGELADO"
       : c.memoria_apuracao?.origem_memoria === "ALTERADO_MANUAL" ? "MEMORIA_ALTERADA"
       : c.memoria_apuracao?.origem_memoria === "CONGELADO_MANUAL_INALTERADO" ? "MEMORIA_CONGELADA"
-      : c.memoria_apuracao ? "MEMORIA_AUTOMATICA"
-      : c.memoria_aplicada ? "MEMORIA_NCM" : "AUTOMATICO";
+      : c.memoria_apuracao ? "MEMORIA_AUTOMATICA" : "AUTOMATICO";
     const motivo = c._motivo_congelamento || p.calculo_congelado?.motivo || "";
     const porPauta = !!(c.metodo_pauta && c.metodo_pauta !== "MVA");
     const pmcDesc = verificarSeTemPMC(`${p.descricao||""} ${p.info_adicional||""}`);
@@ -2905,72 +2883,6 @@ function CalculadoraDIFAL(){
 }
 
 // ============================================================
-// MEMÓRIA DE CÁLCULOS POR NCM — decisões manuais persistidas
-// ============================================================
-function MemoriaCalculosPanel({memorias,onChange}){
-  const[q,setQ]=useState("");
-  const fmtData=(v)=>v?new Date(v).toLocaleString("pt-BR"):"—";
-  const lista=(memorias||[]).filter(m=>!q||String(m.ncm).includes(q.replace(/\D/g,""))||String(m.descricao||"").toLowerCase().includes(q.toLowerCase()));
-  const exportar=()=>{
-    const blob=new Blob([MemoriaCalculoService.exportarJSON()],{type:"application/json"});
-    const a=document.createElement("a");a.href=URL.createObjectURL(blob);
-    a.download=`memoria-calculos-ncm-${new Date().toISOString().slice(0,10)}.json`;a.click();
-  };
-  const importar=(e)=>{
-    const f=e.target.files?.[0];if(!f)return;
-    const r=new FileReader();
-    r.onload=()=>{ try{ MemoriaCalculoService.importarJSON(String(r.result)); onChange?.(); }catch{ alert("Arquivo inválido."); } };
-    r.readAsText(f);
-  };
-  return (
-    <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:20}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap",marginBottom:14}}>
-        <div>
-          <h2 style={{margin:0,fontSize:18,color:C.text}}>⏱️ Memória de Cálculos por NCM</h2>
-          <p style={{margin:"4px 0 0",fontSize:12,color:C.sub}}>Decisões manuais gravadas são aplicadas automaticamente a novos produtos com o mesmo NCM.</p>
-        </div>
-        <div style={{display:"flex",gap:8}}>
-          <button onClick={exportar} style={{padding:"8px 12px",borderRadius:8,border:`1px solid ${C.border}`,background:"transparent",color:C.text,cursor:"pointer",fontSize:12}}>⬇️ Exportar</button>
-          <label style={{padding:"8px 12px",borderRadius:8,border:`1px solid ${C.border}`,color:C.text,cursor:"pointer",fontSize:12}}>
-            ⬆️ Importar<input type="file" accept="application/json" onChange={importar} style={{display:"none"}}/>
-          </label>
-        </div>
-      </div>
-      <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Filtrar por NCM ou descrição…"
-        style={{width:"100%",padding:"10px 12px",borderRadius:8,border:`1px solid ${C.border}`,background:"rgba(0,0,0,.25)",color:C.text,fontSize:13,marginBottom:14}}/>
-      {lista.length===0?(
-        <div style={{color:C.sub,fontSize:13,padding:"24px 0",textAlign:"center"}}>Nenhuma decisão memorizada ainda. Use “Alterar cálculo selecionado” em um produto para criar uma.</div>
-      ):(
-        <div style={{overflowX:"auto"}}>
-          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-            <thead><tr style={{color:C.sub,textAlign:"left"}}>
-              {["NCM","Descrição","Decisão","MVA","Criado em","Atualizado em","Ativo",""].map(h=><th key={h} style={{padding:"8px 6px",borderBottom:`1px solid ${C.border}`}}>{h}</th>)}
-            </tr></thead>
-            <tbody>
-              {lista.map(m=>(
-                <tr key={m.id} style={{color:C.text}}>
-                  <td style={{padding:"8px 6px",borderBottom:`1px solid ${C.border}`,fontFamily:"monospace"}}>{m.ncm}</td>
-                  <td style={{padding:"8px 6px",borderBottom:`1px solid ${C.border}`,maxWidth:280}}>{m.descricao||"—"}</td>
-                  <td style={{padding:"8px 6px",borderBottom:`1px solid ${C.border}`}}>{m.tipo_decisao}</td>
-                  <td style={{padding:"8px 6px",borderBottom:`1px solid ${C.border}`}}>{m.parametros?.mva_informada!=null?`${m.parametros.mva_informada}%${m.parametros.mva_ja_ajustada?" (aj.)":""}`:"—"}</td>
-                  <td style={{padding:"8px 6px",borderBottom:`1px solid ${C.border}`,color:C.sub}}>{fmtData(m.criado_em)}</td>
-                  <td style={{padding:"8px 6px",borderBottom:`1px solid ${C.border}`,color:C.sub}}>{fmtData(m.atualizado_em)}</td>
-                  <td style={{padding:"8px 6px",borderBottom:`1px solid ${C.border}`}}>{m.ativo?"Sim":"Não"}</td>
-                  <td style={{padding:"8px 6px",borderBottom:`1px solid ${C.border}`}}>
-                    <button onClick={()=>{MemoriaCalculoService.excluirMemoria(m.id);onChange?.();}}
-                      style={{padding:"4px 8px",borderRadius:6,border:"1px solid rgba(239,68,68,.5)",background:"transparent",color:"#f87171",cursor:"pointer",fontSize:11}}>Excluir</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ============================================================
 // HISTÓRICO DE APURAÇÕES POR NCM — versionamento das apurações
 // (automáticas e congeladas manualmente) reaplicadas em novas notas
 // ============================================================
@@ -3363,7 +3275,6 @@ function CalcCard({produto, calculo, fcpConfig, onToggleFCP, popoverAberto, onAb
       {/* Bases e parâmetros de cálculo (transparência obrigatória) */}
       {(()=>{
         const dm=calculo.decisao_manual||null;
-        const mem=calculo.memoria_aplicada||null;
         const partes=[];
         partes.push(`Base ICMS ${fmt(calculo.base_calc)}${calculo.icms_proprio_presumido?" (crédito presumido)":""}`);
         if(calculo.aliquota_aplicada)partes.push(`Alíq ${fmtPct(calculo.aliquota_aplicada)} → ICMS ${fmt(calculo.valor_icms_proprio)}`);
@@ -3372,11 +3283,10 @@ function CalcCard({produto, calculo, fcpConfig, onToggleFCP, popoverAberto, onAb
         if(calculo.mva_utilizada>0)partes.push(`MVA ${fmtPct(calculo.mva_utilizada)}${dm?(dm.origem_memoria?" (memória)":" (manual)"):" (automática)"}`);
         if(calculo.aliq_interna)partes.push(`Alíq ST ${fmtPct(calculo.aliq_interna)}`);
         if((calculo.valor_fcp_st||calculo.valor_fcp)>0)partes.push(`FCP ${fmtPct(calculo.fcp_percentual)} = ${fmt(calculo.valor_fcp_st||calculo.valor_fcp)}`);
-        partes.push(`Cálculo: ${dm?(dm.origem_memoria?"memória por NCM":"manual"):"automático"}`);
+        partes.push(`Cálculo: ${dm?(dm.origem_memoria?"memória protegida":"manual"):"automático"}`);
         return (
           <div style={{fontSize:10.5,color:C.sub,background:"rgba(0,0,0,0.22)",border:`1px solid ${C.border}`,borderRadius:8,padding:"7px 10px",marginBottom:10,lineHeight:1.6}}>
             📊 <strong style={{color:C.text}}>Bases:</strong> {partes.join(" | ")}
-            {mem&&<div style={{marginTop:4,color:"#f6ad55",fontWeight:600}}>💾 Aplicado via memória (NCM {mem.ncm}, {mem.tipo_decisao}, criado em {String(mem.criado_em||"").slice(0,10)})</div>}
             {(calculo.tributacao==="ISENTO"||calculo.tributacao==="NAO_TRIBUTADO")&&dm&&<div style={{marginTop:4,color:`rgb(${C.green})`,fontWeight:600}}>🔒 {calculo.tributacao==="ISENTO"?"Isento (memória)":"Não Tributado (memória)"}</div>}
           </div>
         );
@@ -3663,19 +3573,6 @@ export default function App(){
           empresaId: empresaIdFcp,
           aliquotaInterestadual: getAliqInterestadual(orig, dest),
         });
-        if (base.ncm && cru?.tributacao === "ICMS_ST" && cru?.mva_utilizada != null) {
-          try {
-            MemoriaSTService.gravarMemoriaST({
-              ncm: base.ncm,
-              descricao: base.descricao || null,
-              aliquota_origem: cru.aliquota_aplicada ?? 18,
-              mva_utilizada: cru.mva_utilizada,
-              mva_ja_ajustada: !!cru.mva_ja_ajustada,
-              empresa_id: empresaIdFcp,
-              fundamento: `FCP alterado para ${fcpPct}%`,
-            });
-          } catch { /* memória é auxiliar */ }
-        }
       }
       return fcpNext;
     });
@@ -3717,18 +3614,6 @@ export default function App(){
               usuario:"SISTEMA_AUTOMATICO",notaOrigem,empresaId:empId,
               aliquotaInterestadual:getAliqInterestadual(orig,dest),
             });
-            if(c.tributacao==="ICMS_ST"&&c.mva_utilizada!=null){
-              try{
-                MemoriaSTService.gravarMemoriaST({
-                  ncm:pr.ncm,descricao:pr.descricao||null,
-                  aliquota_origem:c.aliquota_aplicada??18,
-                  mva_utilizada:c.mva_utilizada,
-                  mva_ja_ajustada:!!c.mva_ja_ajustada,
-                  empresa_id:empId,
-                  fundamento:`Auto-detectado na importação de NF ${notaOrigem.numero}/${notaOrigem.serie}`,
-                });
-              }catch{/* memória é auxiliar */}
-            }
           });
         }catch{/* memória é auxiliar */}
         const {next,key,mesAno}=upsertRegistroArquivo(arqAcc,notaFinal,prods,calcs);
@@ -3899,8 +3784,6 @@ export default function App(){
   },[xmlInput,ufOrigem,ufDestino,modoCalculo]);
   useEffect(()=>{ analisarRef.current=analisar; },[analisar]);
 
-  const[memorias,setMemorias]=useState([]);
-  useEffect(()=>{ setMemorias(MemoriaCalculoService.listar()); },[]);
   const[histApuracoes,setHistApuracoes]=useState([]);
   // mapa cnpj(dígitos) -> nome, para exibir empresas na memória protegida
   const empresasNomesMemoria=useMemo(()=>{
@@ -3956,10 +3839,7 @@ export default function App(){
     {id:"consulta",icon:"🔎",label:"Consulta NCM"},
     {id:"historico",icon:"📋",label:`Histórico${historico.length?` (${historico.length})`:""}`,},
     {id:"arquivo",icon:"🗄️",label:`Arquivo Fiscal${Object.keys(arquivo).length?` (${Object.keys(arquivo).length})`:""}`},
-    {id:"memoria",icon:"⏱️",label:`Memória de Cálculos${memorias.length?` (${memorias.length})`:""}`},
-    
     {id:"obsidian",icon:"🔒",label:"Memória Protegida"},
-    {id:"dashboard",icon:"📊",label:"Dashboard",disabled:!analisado},
   ];
 
 
@@ -4502,43 +4382,11 @@ export default function App(){
                       if(Object.keys(fcpAplicados).length)setFcpPorProduto(prev=>({...prev,...fcpAplicados}));
                       setHistApuracoes(HistoricoApuracaoService.listar());
 
-                      // Memória de cálculo por NCM — grava a decisão manual
-                      const tipoMem=MemoriaCalculoService.tipoPorModo(dm.modo);
-                      let memGravadas=0;
-                      if(tipoMem){
-                        const vistos=new Set();
-                        novos.filter(pr=>seqs.has(pr.seq)).forEach((pr,i)=>{
-                          const ncm=MemoriaCalculoService.digitos(pr.ncm);
-                          if(!ncm||vistos.has(ncm))return;
-                          vistos.add(ncm);
-                          const empresaIdMem=pr.empresa_id||empresaIdDe(nota);
-                          let ok=null;
-                          if(dm.modo==="ICMS_ST"){
-                            ok=MemoriaSTService.gravarMemoriaST({
-                              ncm,descricao:pr.descricao||null,
-                              aliquota_origem:pr.aliquota_icms??calcs[i]?.aliquota_aplicada??18,
-                              mva_utilizada:dm.mva_informada??null,
-                              mva_ja_ajustada:!!dm.mva_ja_ajustada,
-                              empresa_id:empresaIdMem,
-                              fundamento:`Usuário recalculou manualmente em ${new Date().toISOString().slice(0,10)}`,
-                            });
-                          }else{
-                            ok=MemoriaCalculoService.gravarMemoria({
-                              ncm,descricao:pr.descricao||null,tipo_decisao:tipoMem,
-                              parametros:{mva_informada:dm.mva_informada??null,mva_utilizada:dm.mva_informada??null,mva_ja_ajustada:!!dm.mva_ja_ajustada,modo_calculo:dm.modo},
-                              fundamento:`Usuário recalculou manualmente em ${new Date().toISOString().slice(0,10)}`,
-                              empresa_id:empresaIdMem,
-                            });
-                          }
-                          if(ok)memGravadas++;
-                        });
-                        setMemorias(MemoriaCalculoService.listar());
-                      }
                       const fcpMsg=(modalRecalc.fcpAtivo&&modalRecalc.fcpPct>0)?` + FCP ${modalRecalc.fcpPct}%`:"";
                       if(nota){
                         const {next}=upsertRegistroArquivo(arquivo,nota,novos,calcs);
                         setArquivo(next);
-                        setArqMsg({tipo:forcados>0?"erro":"ok",txt:`${seqs.size} produto(s) recalculado(s) como ${dm.modo}${fcpMsg}${forcados>0?` · ${forcados} com cálculo FORÇADO apesar de vedação de CST`:""} · ${memGravadas} memória(s) por NCM gravada(s).`});
+                        setArqMsg({tipo:forcados>0?"erro":"ok",txt:`${seqs.size} produto(s) recalculado(s) como ${dm.modo}${fcpMsg}${forcados>0?` · ${forcados} com cálculo FORÇADO apesar de vedação de CST`:""} · decisão registrada na Memória Protegida.`});
                         setTimeout(()=>setArqMsg(null),7000);
                       }
                       setSelCalc(new Set());
@@ -4660,7 +4508,6 @@ export default function App(){
         {/* ═══════════ CONSULTA NCM ═══════════ */}
         {tab==="consulta"&&<ConsultaNCM/>}
 
-        {tab==="memoria"&&<MemoriaCalculosPanel memorias={memorias} onChange={()=>setMemorias(MemoriaCalculoService.listar())}/>}
         {tab==="obsidian"&&<MemoriaObsidian empresasNomes={empresasNomesMemoria}/>}
 
 
@@ -4902,55 +4749,6 @@ export default function App(){
           );
         })()}
 
-        {/* ═══════════ DASHBOARD ═══════════ */}
-        {tab==="dashboard"&&analisado&&(
-          <>
-            <div style={S.statsGrid}>
-              <Stat label="Total Produtos"      value={stats.total}                                                                                    col={C.blue}/>
-              <Stat label="Isenção"             value={stats.isentos}                                                                                  col={C.green}  sub="Conv.101/97"/>
-              <Stat label="ICMS-ST"             value={stats.comST}                                                                                    col={C.blue}   sub="RICMS/BA Anx.1"/>
-              <Stat label="Redução BC"          value={stats.comBeneficio}                                                                             col={C.yellow} sub="Conv.52/91"/>
-              <Stat label="Sem Regra"           value={stats.semRegra}                                                                                 col={C.gray}/>
-              <Stat label="ICMS Total NF"       value={fmt(stats.totalICMSNF) + (stats.temPresuncaoICMSNF ? " (presum.)" : "")}                           col={C.gray}   sub="original"/>
-              <Stat label="ICMS Calculado"      value={fmt(stats.totalICMSCalc)}                                                                       col={C.green}  sub="após regras"/>
-              <Stat label="Economia Fiscal"     value={fmt(stats.totalEconomia)}                                                                       col={C.green}  sub="benefícios"/>
-            </div>
-            <div style={S.card}>
-              <div style={S.cardTitle}>📊 Resumo por Produto</div>
-              <div style={{overflowX:"auto"}}>
-                <table style={S.table}>
-                  <thead><tr>{["Produto","NCM","CEST","CFOP","Tributação","Base Legal","ICMS Calc.","Status"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
-                  <tbody>
-                    {produtos.map((p,i)=>{
-                      const regras=p.analise.filter(a=>a.tipo!=="NAO_ENCONTRADO");
-                      const semRegra=p.analise.every(a=>a.tipo==="NAO_ENCONTRADO");
-                      const tipos=[...new Set(p.analise.map(a=>a.tipo))];
-                      const funds=[...new Set(regras.map(r=>r.fundamento))];
-                      const c=calculos[i]||{};
-                      return(
-                        <tr key={p.seq} style={{cursor:"pointer"}} onClick={()=>{setTab("calculo");}}>
-                          <td style={S.td}><div style={{fontWeight:600,color:C.text,fontSize:12}}>{p.descricao}</div><div style={{fontSize:10,color:C.muted}}>{p.codigo}</div></td>
-                          <td style={S.td}><span style={S.tag}>{p.ncm}</span></td>
-                          <td style={{...S.td,fontFamily:"monospace",fontSize:10,color:C.muted}}>{p.cest||"—"}</td>
-                          <td style={{...S.td,fontFamily:"monospace",fontSize:11,color:C.sub}}>{p.cfop||"—"}</td>
-                          <td style={S.td}><div style={{display:"flex",gap:3,flexWrap:"wrap"}}>{tipos.map(t=><Chip key={t} tipo={t}/>)}</div></td>
-                          <td style={{...S.td,maxWidth:220}}>{funds.map((f,i)=><div key={i} style={{fontSize:11,color:`rgb(${C.blue})`,marginBottom:2}}>⚖️ {f}</div>)}{semRegra&&<span style={{color:C.muted,fontSize:11}}>—</span>}</td>
-                          <td style={{...S.td,fontWeight:700,color:"#68d391",whiteSpace:"nowrap"}}>{fmt(c.valor_icms_total)}</td>
-                          <td style={S.td}>
-                            {semRegra
-                              ? <span style={{color:C.muted,fontSize:11}}>⚠️ Sem regra</span>
-                              : <span style={{color:"#68d391",fontSize:11}}>✅ Calculado</span>
-                            }
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </>
-        )}
         </main>
       </div>
     </div>

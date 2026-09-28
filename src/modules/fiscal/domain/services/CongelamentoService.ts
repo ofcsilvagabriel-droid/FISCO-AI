@@ -3,9 +3,7 @@
 // resultado é congelado e persistido. O sistema NUNCA descongela
 // automaticamente — apenas por ação explícita do usuário.
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { MemoriaCalculoService } from "./MemoriaCalculoService";
 import { HistoricoApuracaoService } from "./HistoricoApuracaoService";
-import { MemoriaSTService } from "./MemoriaSTService";
 
 export interface ParametrosCongelados {
   base_calc: number;
@@ -119,7 +117,7 @@ export function congelarCalculo(
 }
 
 /**
- * Congela E GRAVA na memória por NCM + histórico de apuração.
+ * Congela e registra a decisão no histórico que alimenta a Memória Protegida.
  */
 export function congelarCalculoComMemoria(
   produto: any,
@@ -131,59 +129,7 @@ export function congelarCalculoComMemoria(
   const congelado = congelarCalculo(produto, novoCalculo, motivo, usuario);
   const emp = String(empresaId ?? "").trim();
 
-  // 2. Memória por NCM
-  if (produto?.ncm && emp) {
-    try {
-      const trib = novoCalculo?.tributacao;
-      const tipoMem = (
-        {
-          ICMS_ST: "ST_MANUAL",
-          ANTECIPACAO: "ANTECIPACAO_MANUAL",
-          DIFAL: "DIFAL_MANUAL",
-        } as Record<string, string>
-      )[trib];
-
-      let memoria: any = null;
-      if (
-        trib === "ICMS_ST" &&
-        (novoCalculo?.mva_utilizada ?? novoCalculo?.mva_informada) != null
-      ) {
-        memoria = MemoriaSTService.gravarMemoriaST({
-          ncm: produto.ncm,
-          descricao: produto.descricao || null,
-          aliquota_origem: Number(novoCalculo?.aliquota_aplicada ?? 18),
-          mva_utilizada: Number(novoCalculo?.mva_utilizada ?? novoCalculo?.mva_informada),
-          mva_ja_ajustada: !!novoCalculo?.mva_ja_ajustada,
-          empresa_id: emp,
-          fundamento: motivo || `Congelado por ${usuario} em ${new Date().toISOString()}`,
-        });
-      } else if (tipoMem) {
-        memoria = MemoriaCalculoService.gravarMemoria({
-          ncm: produto.ncm,
-          descricao: produto.descricao || null,
-          tipo_decisao: tipoMem as any,
-          parametros: {
-            mva_informada: novoCalculo?.mva_informada ?? null,
-            mva_utilizada: novoCalculo?.mva_utilizada ?? null,
-            mva_ja_ajustada: !!novoCalculo?.mva_ja_ajustada,
-            aliquota_origem_st: novoCalculo?.aliquota_aplicada ?? null,
-            modo_calculo: trib,
-          },
-          fundamento: motivo || `Congelado por ${usuario} em ${new Date().toISOString()}`,
-          empresa_id: emp,
-        });
-      }
-
-      if (memoria) {
-        (congelado as any).memoria_id = memoria.id;
-        logTecnico(`Memória #${memoria.id} criada junto com congelamento`);
-      }
-    } catch (e) {
-      logTecnico(`Aviso: memória não gravada — ${e}`);
-    }
-  }
-
-  // 3. Histórico de apuração
+  // Histórico de apuração (fonte exclusiva da Memória Protegida).
   try {
     if (produto?.ncm && emp) {
       HistoricoApuracaoService.registrarAutomaticamenteNaMemoria({
