@@ -3475,8 +3475,9 @@ export default function App(){
   const[nota,setNota]=useState(null);
   const[produtos,setProdutos]=useState([]);
   const[calculos,setCalculos]=useState([]);
-  const[ufOrigem,setUfOrigem]=useState("SP");
-  const[ufDestino,setUfDestino]=useState("BA");
+  // Contingência para XMLs sem UF; na operação normal os dados vêm do XML.
+  const[ufOrigem]=useState("SP");
+  const[ufDestino]=useState("BA");
   const[erro,setErro]=useState(null);
   const[expandido,setExpandido]=useState(null);
   const[analisado,setAnalisado]=useState(false);
@@ -3488,7 +3489,7 @@ export default function App(){
   const[histBusca,setHistBusca]=useState("");
   const[histEmpresaAberta,setHistEmpresaAberta]=useState(null);
   const[modoUpload,setModoUpload]=useState("drag");
-  const[modoCalculo,setModoCalculo]=useState("AUTO"); // AUTO = ST/Antecipação/Normal · DIFAL = EC 87/15
+  const[modoCalculo]=useState("AUTO"); // A tributação é determinada a partir do XML e das regras fiscais.
   const[arquivo,setArquivo]=useState({});
   useEffect(()=>{setArquivo(loadArquivo());},[]);
   const[arqEmpresaSel,setArqEmpresaSel]=useState(null);
@@ -3896,7 +3897,7 @@ export default function App(){
         {tab==="importar"&&(
           <>
             {erro&&<div style={S.alert("error")}>❌ {erro}</div>}
-            <div style={{display:"grid",gridTemplateColumns:"1fr 300px",gap:20,alignItems:"start"}}>
+            <div style={{display:"grid",gridTemplateColumns:"minmax(0, 1fr)",alignItems:"start"}}>
               <div style={S.card}>
                 <div style={S.cardTitle}>📄 Importar XML da NF-e</div>
                 <div style={{display:"flex",gap:6,marginBottom:14}}>
@@ -3943,60 +3944,6 @@ export default function App(){
                     </div>
                   </div>
                 )}
-              </div>
-
-
-              <div>
-                <div style={S.card}>
-                  <div style={S.cardTitle}>⚙️ Configuração</div>
-                  <div style={{marginBottom:14}}>
-                    <div style={{fontSize:11,color:C.muted,fontWeight:600,marginBottom:6}}>Modo de Cálculo</div>
-                    <div style={{display:"flex",flexDirection:"column",gap:4}}>
-                      {[
-                        ["AUTO","🧾 Convencional (ST / Antecipação / Normal)","Aplica ICMS-ST, antecipação parcial RICMS/BA ou tributação normal conforme o produto."],
-                        ["DIFAL","📐 DIFAL (EC 87/2015)","Calcula o diferencial de alíquotas para operação interestadual a consumidor final."],
-                      ].map(([k,l,d])=>(
-                        <label key={k} style={{display:"flex",gap:8,alignItems:"flex-start",padding:"8px 10px",borderRadius:8,border:`1px solid ${modoCalculo===k?`rgb(${C.blue})`:C.border}`,background:modoCalculo===k?`rgba(${C.blue},0.08)`:"transparent",cursor:"pointer"}}>
-                          <input type="radio" name="modoCalc" checked={modoCalculo===k} onChange={()=>setModoCalculo(k)} style={{marginTop:3}}/>
-                          <div>
-                            <div style={{fontSize:12,fontWeight:700,color:modoCalculo===k?`rgb(${C.blue})`:C.text}}>{l}</div>
-                            <div style={{fontSize:10,color:C.muted,marginTop:2,lineHeight:1.4}}>{d}</div>
-                          </div>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                  {[["UF Origem (fallback)","SP",ufOrigem,setUfOrigem],["UF Destino (fallback)","BA",ufDestino,setUfDestino]].map(([l,ph,v,sv])=>(
-                    <div key={l} style={{marginBottom:12}}>
-                      <div style={{fontSize:11,color:C.muted,fontWeight:600,marginBottom:4}}>{l}</div>
-                      <input style={S.inp} value={v} onChange={e=>sv(e.target.value.toUpperCase())} maxLength={2} placeholder={ph} />
-                    </div>
-                  ))}
-                </div>
-                <div style={S.card}>
-                  <div style={S.cardTitle}>⚖️ Legislações</div>
-                  {[
-                    ["RICMS/BA","Decreto 13.780/2012 — Substituição Tributária (Anexo 1)",C.blue],
-                    ["Conv. ICMS 52/91","Redução BC — Equipamentos Industriais e Agrícolas",C.yellow],
-                    ["Conv. ICMS 101/97","Isenção — Energia Solar e Eólica",C.green],
-                    ["Conv. ICMS 142/18","Normas gerais ST (CEST/Segmentos) — aplicação restrita a autopeças",C.blue],
-                    ["Prot. ICMS 41/08 e 97/10","Autopeças interestadual (peças, componentes e acessórios para veículos automotores)",C.yellow],
-                    ["Regra PMC / PMPF / MVA","Prioridade de pauta ST (regra_icms_st_pmc)",C.green],
-                    ["Motor de Identificação ST v3.0","Hierarquia CEST → NCM → Descrição → Segmento",C.blue],
-                  ].map(([n,d,c])=>(
-
-                    <div key={n} style={{display:"flex",gap:8,alignItems:"flex-start",marginBottom:10}}>
-                      <div style={{width:7,height:7,borderRadius:"50%",background:`rgb(${c})`,marginTop:5,flexShrink:0}}/>
-                      <div><div style={{fontSize:12,fontWeight:700,color:`rgb(${c})`}}>{n}</div><div style={{fontSize:11,color:C.muted}}>{d}</div></div>
-                    </div>
-                  ))}
-                </div>
-                <div style={S.card}>
-                  <div style={S.cardTitle}>📄 Exportar</div>
-                  <div style={{fontSize:11,color:C.muted,lineHeight:1.6}}>
-                    Após a análise, exporte o relatório consolidado de cálculo em <strong style={{color:"#fc8181"}}>PDF</strong> ou a planilha em <strong style={{color:"#68d391"}}>CSV</strong> pelo botão no cabeçalho.
-                  </div>
-                </div>
               </div>
             </div>
           </>
