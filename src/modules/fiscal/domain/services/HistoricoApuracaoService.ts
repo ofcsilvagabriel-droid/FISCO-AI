@@ -26,14 +26,43 @@ function log(msg: string) {
 function loadAll(): Record<string, any> {
   try {
     const raw = localStorage.getItem(KEY);
-    return raw ? JSON.parse(raw) : {};
+    const dados = raw ? JSON.parse(raw) : {};
+    if (sanitizarHistoricos(dados)) localStorage.setItem(KEY, JSON.stringify(dados));
+    return dados;
   } catch {
     return {};
   }
 }
 
+/** Remove valores monetários de registros antigos: a memória guarda apenas a regra fiscal. */
+function sanitizarHistoricos(data: Record<string, any>): boolean {
+  let alterado = false;
+  Object.values(data || {}).forEach((historico: any) => {
+    (historico?.apuracoes || []).forEach((apuracao: any) => {
+      if (apuracao?.calculo_aplicado?.valores) {
+        delete apuracao.calculo_aplicado.valores;
+        alterado = true;
+      }
+      (apuracao?.alteracoes || []).forEach((alteracao: any) => {
+        ["de", "para"].forEach((lado) => {
+          const registro = alteracao?.[lado];
+          if (!registro || typeof registro !== "object") return;
+          Object.keys(registro).forEach((chave) => {
+            if (/^(valor|base)/i.test(chave)) {
+              delete registro[chave];
+              alterado = true;
+            }
+          });
+        });
+      });
+    });
+  });
+  return alterado;
+}
+
 function saveAll(data: Record<string, any>) {
   try {
+    sanitizarHistoricos(data);
     localStorage.setItem(KEY, JSON.stringify(data));
   } catch {
     /* quota */
@@ -368,8 +397,8 @@ export const HistoricoApuracaoService = {
 
   /**
    * Monta a DECISÃO FISCAL memorizável a partir do resultado do cálculo.
-   * Os valores em R$ entram apenas como amostra ilustrativa da última
-   * aplicação — nunca como chave de decisão (Ajuste 1).
+   * Guarda exclusivamente os parâmetros da regra fiscal. Valores em R$ são
+   * sempre calculados novamente a partir do XML em cada nova nota.
    */
   montarDecisaoFiscal(c: any, tipoCalculo: string, faixa: string) {
     const cc = c || {};
@@ -392,19 +421,6 @@ export const HistoricoApuracaoService = {
           ? Number(cc.aliquota_presumida ?? cc.presuncao_credito_aliq ?? cc.aliquota_aplicada) || 0
           : null,
         pauta_aplicada: cc.fonte_pauta || cc.metodo_pauta || null,
-      },
-      // amostra ilustrativa da última aplicação (auditoria/exibição apenas)
-      valores: {
-        amostra_ilustrativa: true,
-        valor_total: Number(cc.base_calc) || 0,
-        base_icms: Number(cc.base_calc) || 0,
-        aliquota_icms: Number(cc.aliquota_aplicada) || 0,
-        valor_icms: Number(cc.valor_icms_proprio) || 0,
-        valor_icms_st: Number(cc.valor_icms_st) || 0,
-        base_st: Number(cc.base_st) || 0,
-        mva_utilizada: cc.mva_utilizada ?? null,
-        valor_difal: Number(cc.valor_difal) || 0,
-        valor_fcp: (Number(cc.valor_fcp_st) || 0) + (Number(cc.valor_fcp) || 0),
       },
       fundamento: cc.icms_proprio_presumido
         ? `ICMS Próprio presumido (alíquota interestadual ${Number(cc.aliquota_presumida ?? cc.presuncao_credito_aliq ?? cc.aliquota_aplicada) || 0}%) — ${cc.fundamento || cc.obs || ""}`.trim()
@@ -567,12 +583,9 @@ export const HistoricoApuracaoService = {
       descricao: origem.descricao_ncm_ultima_nota,
       calculo: {
         tributacao: corrente.calculo_aplicado?.tributacao,
-        base_calc: corrente.calculo_aplicado?.valores?.base_icms,
-        aliquota_aplicada: corrente.calculo_aplicado?.valores?.aliquota_icms,
-        valor_icms_proprio: corrente.calculo_aplicado?.valores?.valor_icms,
-        valor_icms_st: corrente.calculo_aplicado?.valores?.valor_icms_st,
-        base_st: corrente.calculo_aplicado?.valores?.base_st,
-        mva_utilizada: corrente.calculo_aplicado?.valores?.mva_utilizada,
+        mva_informada: corrente.calculo_aplicado?.parametros?.mva_informada,
+        mva_ja_ajustada: corrente.calculo_aplicado?.parametros?.mva_ja_ajustada,
+        fcp_percentual: corrente.calculo_aplicado?.parametros?.fcp_percentual,
         fundamento: `Duplicado do NCM ${digitos(ncmOrigem)} — ${corrente.calculo_aplicado?.fundamento || ""}`,
         decisao_manual: { modo: corrente.calculo_aplicado?.modo_decisao },
       },
@@ -742,7 +755,7 @@ export const HistoricoApuracaoService = {
     if (modo === "AUTO") return null;
     return {
       modo,
-      mva_informada: versao.parametros?.mva_informada ?? versao.valores?.mva_utilizada ?? null,
+      mva_informada: versao.parametros?.mva_informada ?? null,
       mva_ja_ajustada: !!versao.parametros?.mva_ja_ajustada,
       forcar_st: true,
       origem_memoria: true,

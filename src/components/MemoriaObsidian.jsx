@@ -107,7 +107,6 @@ function DetalheNCM({ h, onChange, onLog }) {
   const corrente = apuracoes.find((a) => a.id === h.versao_corrente?.id_apuracao) || apuracoes[0];
   const alteracoes = apuracoes.flatMap((a) => (a.alteracoes || []).map((x) => ({ ...x, versao: a.versao })))
     .sort((a, b) => String(b.data).localeCompare(String(a.data)));
-  const val = corrente?.calculo_aplicado?.valores || {};
   const par = corrente?.calculo_aplicado?.parametros || {};
 
   const acao = (label, fn, cor = T.panel2) => (
@@ -187,8 +186,7 @@ function DetalheNCM({ h, onChange, onLog }) {
           <div>├─ Pauta (informativo, nunca reaplicada): {par.pauta_aplicada || "—"}</div>
           <div style={{ color: T.sub }}>📌 {corrente.calculo_aplicado?.fundamento || "—"}</div>
           <div style={{ color: T.sub, marginTop: 6, borderTop: `1px dashed ${T.border}`, paddingTop: 6 }}>
-            🧪 Amostra ilustrativa da última aplicação (não é a chave de decisão): base {fmt(val.base_icms)} ·
-            ICMS {fmt(val.valor_icms)} · ST {fmt(val.valor_icms_st)} · DIFAL {fmt(val.valor_difal)} · FCP {fmt(val.valor_fcp)}
+            🧪 Valores monetários não são memorizados: eles são sempre apurados a partir do XML da nota atual.
           </div>
           <div style={{ color: T.sub }}>
             📍 Nota {corrente.nota_origem?.numero || "—"}/{corrente.nota_origem?.serie || "—"} · 🧑 {corrente.criado_por} · 📅 {dt(corrente.criado_em)}
@@ -231,7 +229,6 @@ function DetalheNCM({ h, onChange, onLog }) {
             <span style={{ color: tipoCor(a.calculo_aplicado?.tipo_calculo) }}>{a.calculo_aplicado?.tipo_calculo}</span>
             <span>{a.calculo_aplicado?.tributacao}</span>
             <span style={{ color: T.sub }}>{dt(a.criado_em)} — {a.criado_por}</span>
-            <span style={{ color: T.sub }}>{fmt(a.calculo_aplicado?.valores?.valor_icms_st)}</span>
             {a.id !== corrente?.id && (
               <button onClick={() => { HistoricoApuracaoService.reverterParaVersao(h.ncm, a.versao, h.empresa_id); onLog("REVERTEU", `NCM ${h.ncm} revertido para v${a.versao}`, h.ncm); onChange(); }}
                 style={{ padding: "2px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.panel2, color: T.text, fontSize: 10, cursor: "pointer" }}>
@@ -250,18 +247,15 @@ function DetalheNCM({ h, onChange, onLog }) {
         <div style={{ background: T.panel2, border: `1px solid ${T.border}`, borderRadius: 10, padding: 12, marginBottom: 14 }}>
           <div style={{ color: T.accent, fontWeight: 700 }}>⇄ COMPARAÇÃO v{corrente.versao} × v{comparar.versao} — análise de impacto</div>
           {[["Tributação", corrente.calculo_aplicado?.tributacao, comparar.calculo_aplicado?.tributacao],
-            ["Base ICMS", fmt(val.base_icms), fmt(comparar.calculo_aplicado?.valores?.base_icms)],
-            ["ICMS próprio", fmt(val.valor_icms), fmt(comparar.calculo_aplicado?.valores?.valor_icms)],
-            ["ICMS-ST", fmt(val.valor_icms_st), fmt(comparar.calculo_aplicado?.valores?.valor_icms_st)],
-            ["MVA", val.mva_utilizada != null ? pct(val.mva_utilizada) : "—", comparar.calculo_aplicado?.valores?.mva_utilizada != null ? pct(comparar.calculo_aplicado.valores.mva_utilizada) : "—"],
-          ].map(([k, a, b]) => (
+            ["MVA", corrente.calculo_aplicado?.parametros?.mva_informada != null ? pct(corrente.calculo_aplicado.parametros.mva_informada) : "—", comparar.calculo_aplicado?.parametros?.mva_informada != null ? pct(comparar.calculo_aplicado.parametros.mva_informada) : "—"],
+            ["FCP", pct(corrente.calculo_aplicado?.parametros?.fcp_percentual), pct(comparar.calculo_aplicado?.parametros?.fcp_percentual)]].map(([k, a, b]) => (
             <div key={k} style={{ display: "grid", gridTemplateColumns: "160px 1fr 1fr", gap: 8 }}>
               <span style={{ color: T.sub }}>{k}</span><span>{a}</span>
               <span style={{ color: a === b ? T.sub : T.warn }}>{b}</span>
             </div>
           ))}
           <div style={{ marginTop: 6, color: T.warn }}>
-            Impacto no ICMS-ST ao aplicar v{comparar.versao}: {fmt((comparar.calculo_aplicado?.valores?.valor_icms_st || 0) - (val.valor_icms_st || 0))}
+            A comparação mostra apenas parâmetros fiscais; os valores serão calculados com os dados do XML atual.
           </div>
         </div>
       )}

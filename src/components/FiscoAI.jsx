@@ -2953,7 +2953,7 @@ function HistoricoApuracoesPanel({historicos,selecionado,onSelecionar,onChange})
           </div>
           {[...(det.apuracoes||[])].sort((a,b)=>b.versao-a.versao).map(a=>{
             const corrente=a.id===det.versao_corrente?.id_apuracao;
-            const v=a.calculo_aplicado?.valores||{};
+            const p=a.calculo_aplicado?.parametros||{};
             return (
               <div key={a.id} style={{borderLeft:`3px solid ${corrente?"#63b3ed":C.border}`,paddingLeft:10,marginBottom:12}}>
                 <div style={{fontSize:12,fontWeight:700,color:corrente?"#63b3ed":C.text}}>
@@ -2961,8 +2961,8 @@ function HistoricoApuracoesPanel({historicos,selecionado,onSelecionar,onChange})
                 </div>
                 <div style={{fontSize:11.5,color:C.sub,lineHeight:1.6}}>
                   Criado em {fmtData(a.criado_em)}{a.nota_origem?.numero?` (Nota ${a.nota_origem.numero})`:""} por {a.criado_por}<br/>
-                  Modo: {a.calculo_aplicado?.tributacao||"—"}{v.mva_utilizada?` | MVA: ${v.mva_utilizada}%`:""}<br/>
-                  ICMS: {money(v.valor_icms)}{v.valor_icms_st?` | ICMS-ST: ${money(v.valor_icms_st)}`:""}{v.valor_difal?` | DIFAL: ${money(v.valor_difal)}`:""}
+                  Modo: {a.calculo_aplicado?.tributacao||"—"}{p.mva_informada!=null?` | MVA: ${p.mva_informada}%`:""}{p.fcp_percentual?` | FCP: ${p.fcp_percentual}%`:""}<br/>
+                  Valores monetários são calculados a partir do XML da nota atual.
                 </div>
                 {(a.alteracoes||[]).map((alt,i)=>(
                   <div key={i} style={{fontSize:11,color:"#f6ad55",marginTop:4}}>
