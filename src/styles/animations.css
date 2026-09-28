@@ -1,0 +1,57 @@
+/* Animações suaves do FiscoAI */
+
+@keyframes fiscoFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fiscoSlideUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fiscoPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.animate-fadeIn { animation: fiscoFadeIn 300ms ease-out both; }
+.animate-slideUp { animation: fiscoSlideUp 300ms cubic-bezier(0.4, 0, 0.2, 1) both; }
+.animate-softPulse { animation: fiscoPulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+
+/* Scrollbar refinada */
+.fisco-app ::-webkit-scrollbar { width: 9px; height: 9px; }
+.fisco-app ::-webkit-scrollbar-track { background: rgba(2, 6, 23, 0.35); }
+.fisco-app ::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.28);
+  border-radius: 9999px;
+}
+.fisco-app ::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.45); }
+
+/* Hover/focus consistentes */
+.fisco-app button { transition: transform 150ms cubic-bezier(0.4, 0, 0.2, 1), filter 150ms, opacity 150ms, background 150ms, border-color 150ms; }
+.fisco-app button:not(:disabled):hover { filter: brightness(1.1); }
+.fisco-app button:not(:disabled):active { transform: translateY(1px); }
+.fisco-app button:focus-visible { outline: 2px solid rgba(91, 141, 250, 0.7); outline-offset: 2px; }
+
+.fisco-app input:focus, .fisco-app select:focus, .fisco-app textarea:focus {
+  border-color: rgba(91, 141, 250, 0.65) !important;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+.fisco-card { transition: border-color 200ms, box-shadow 200ms, transform 200ms; }
+.fisco-card:hover { border-color: rgba(148, 163, 184, 0.28); }
+
+.fisco-row:hover { background: rgba(255, 255, 255, 0.035); }
+
+/* Layout responsivo do shell (sidebar + conteúdo) */
+@media (max-width: 900px) {
+  .fisco-shell { grid-template-columns: minmax(0, 1fr) !important; }
+  .fisco-shell > aside {
+    position: static !important;
+    flex-direction: row !important;
+    flex-wrap: wrap;
+    overflow-x: auto;
+  }
+  .fisco-shell > aside > div:first-child { width: 100%; }
+}

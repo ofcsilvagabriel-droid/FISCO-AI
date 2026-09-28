@@ -1,0 +1,25 @@
+appId: br.com.fiscoai.desktop
+productName: FiscoAI Desktop
+artifactName: FiscoAI-Desktop-${version}-${arch}.${ext}
+compression: maximum
+asar: true
+files:
+  - .output/**/*
+  - electron/**/*
+  - package.json
+extraMetadata:
+  main: electron/main.cjs
+win:
+  target:
+    - nsis
+    - portable
+  executableName: FiscoAI
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: FiscoAI
+portable:
+  artifactName: FiscoAI-Desktop-${version}-portable.exe

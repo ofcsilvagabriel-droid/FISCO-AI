@@ -1,0 +1,15 @@
+export { LocalStorageRepository } from "./LocalStorageRepository";
+export { AliquotasRepository } from "./AliquotasRepository";
+export { Conv5291Repository } from "./Conv5291Repository";
+export { RicmsBaRepository } from "./RicmsBaRepository";
+export { EmpresaRepository } from "./EmpresaRepository";
+export { ProdutoRepository } from "./ProdutoRepository";
+export { FornecedorRepository } from "./FornecedorRepository";
+export { ClienteRepository } from "./ClienteRepository";
+export { NotaFiscalRepository } from "./NotaFiscalRepository";
+export { UsuarioRepository } from "./UsuarioRepository";
+export { CompetenciaRepository } from "./CompetenciaRepository";
+export { ApuracaoRepository } from "./ApuracaoRepository";
+export { RelatorioRepository } from "./RelatorioRepository";
+export { LegislacaoRepository } from "./LegislacaoRepository";
+export { BeneficioRepository } from "./BeneficioRepository";
