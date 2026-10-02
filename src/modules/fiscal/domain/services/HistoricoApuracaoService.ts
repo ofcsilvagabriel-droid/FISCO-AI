@@ -97,7 +97,7 @@ export type RegimeMemoria = (typeof REGIMES)[number];
 export function derivarRegime(c: any): RegimeMemoria {
   const t = String(c?.tributacao || "").toUpperCase();
   const modo = String(c?.decisao_manual?.modo || "").toUpperCase();
-  const alvo = modo && modo !== "AUTO" ? modo : t;
+  const alvo = modo && !["AUTO", "CONVENIO_52_91"].includes(modo) ? modo : t;
   if (/ST/.test(alvo)) return "ST";
   if (/DIFAL/.test(alvo)) return "DIFAL";
   if (/ANTECIPACAO/.test(alvo)) return "ANTECIPACAO";
@@ -122,6 +122,7 @@ function fingerprintDecisao(d: any): string {
     d.aliquota_interestadual_faixa,
     d.parametros?.mva_informada ?? null,
     !!d.parametros?.mva_ja_ajustada,
+    d.parametros?.anexo_convenio_5291 ?? null,
     Number(d.parametros?.fcp_percentual) || 0,
     !!d.parametros?.presuncao_credito,
   ]);
@@ -412,6 +413,7 @@ export const HistoricoApuracaoService = {
       parametros: {
         mva_informada: cc.mva_informada ?? cc.decisao_manual?.mva_informada ?? cc.mva_utilizada ?? null,
         mva_ja_ajustada: !!(cc.mva_ja_ajustada ?? cc.decisao_manual?.mva_ja_ajustada),
+        anexo_convenio_5291: cc.decisao_manual?.anexo_convenio_5291 || null,
         aliquota_interestadual_referencia: Number(cc.aliquota_interestadual ?? cc.aliq_interestadual) || null,
         fcp_percentual: Number(cc.fcp_percentual) || 0,
         icms_destacado_nf: cc.icms_destacado_nf ?? !cc.icms_proprio_presumido,
@@ -757,6 +759,7 @@ export const HistoricoApuracaoService = {
       modo,
       mva_informada: versao.parametros?.mva_informada ?? null,
       mva_ja_ajustada: !!versao.parametros?.mva_ja_ajustada,
+      anexo_convenio_5291: versao.parametros?.anexo_convenio_5291 || null,
       forcar_st: true,
       origem_memoria: true,
       origem_apuracao: versao.origem_memoria,

@@ -4,7 +4,7 @@
 // Convênios ICMS (52/91, 101/97, 142/18 quando citado como Convênio)
 // NÃO devem ser identificados pelo motor de pontuação genérico
 // (NCM/Descrição/CEST com prefixos). Convênios exigem enquadramento
-// LITERAL: NCM 8 dígitos idênticos + descrição compatível.
+// LITERAL: NCM no nível definido pela regra; para isenção, descrição compatível.
 // ============================================================
 import { normalizarTexto } from "./motorST";
 import { calcularScoreNCM, normalizarNCM } from "./motorClassificacaoST";
@@ -65,13 +65,16 @@ export function isRegraConvenio(regra){
  *   - NCM compatível dígito-a-dígito no NÍVEL MÁXIMO definido pela regra
  *     (regra com 8 dígitos exige os 8; regra com 4 exige os 4 primeiros).
  *     Reaproveita calcularScoreNCM do motorClassificacaoST — sem duplicar lógica.
- *   - Pelo menos 1 termo relevante da descrição da regra presente na descrição
- *     do produto (com sinônimos básicos e singular/plural).
+ *   - Para isenção, pelo menos 1 termo relevante da descrição da regra presente
+ *     na descrição do produto. Redução por NCM mantém divergência em auditoria.
  */
 export function matchConvenioEstrito(produto, regra){
   const p8 = ncmDigitos(produto?.ncm);
-  const r8 = ncmDigitos(regra?.ncm);
-  const score = calcularScoreNCM(p8, r8);
+  const alternativas = String(regra?.ncm || "").split("/").map(ncmDigitos).filter(Boolean);
+  const scores = alternativas.map(n => ({ n, score: calcularScoreNCM(p8, n) }));
+  const melhor = scores.find(x => x.score.ncm_compativel) || scores[0];
+  const r8 = melhor?.n || "";
+  const score = melhor?.score || calcularScoreNCM(p8, r8);
   const ncmExato = !!p8 && !!r8 && score.ncm_compativel;
 
   const tokProd = expandirTokens(tokenizar(produto?.descricao));
@@ -79,12 +82,14 @@ export function matchConvenioEstrito(produto, regra){
   const hits = tokRegr.filter(t => tokProd.has(t));
   const descCompativel = tokRegr.length === 0 ? ncmExato : hits.length >= 1;
 
-  const enquadrado = ncmExato && descCompativel;
+  // Para redução, o NCM arrolado identifica a hipótese. A descrição continua
+  // auditada: divergências exigem revisão, mas não silenciam o benefício.
+  const enquadrado = ncmExato && (regra?.tipo === "REDUCAO_BC" || descCompativel);
   let motivo;
   if (!ncmExato){
     motivo = `Convênio exige NCM compatível em todos os ${score.digitos_regra || 8} dígito(s) definidos na regra — produto ${p8||"—"} × regra ${r8||"—"} (não enquadrado).`;
   } else if (!descCompativel){
-    motivo = `NCM compatível, mas descrição do produto não contém termos da descrição do Convênio (${tokRegr.slice(0,4).join(", ")||"—"}). Enquadramento NEGADO.`;
+    motivo = `NCM compatível, mas descrição do produto não contém termos da descrição do Convênio (${tokRegr.slice(0,4).join(", ")||"—"}). ${regra?.tipo === "REDUCAO_BC" ? "Redução identificada por NCM; revisar a descrição legal." : "Enquadramento NEGADO."}`;
   } else {
     motivo = `NCM compatível a nível ${score.nivel_correspondencia} (${score.digitos_regra} díg. definidos: ${r8}) e descrição compatível (${hits.slice(0,3).join(", ")||"—"}). Enquadrado pelo Convênio.`;
   }

@@ -11,6 +11,7 @@ export interface ParametrosCongelados {
   mva_utilizada?: number | null;
   mva_informada?: number | null;
   mva_ja_ajustada?: boolean;
+  anexo_convenio_5291?: string | null;
   aliq_interna?: number;
   icms_proprio?: number;
   fcp_percentual?: number;
@@ -79,6 +80,7 @@ export function congelarCalculo(
       mva_ja_ajustada: !!(
         novoCalculo?.mva_ja_ajustada ?? novoCalculo?.decisao_manual?.mva_ja_ajustada
       ),
+      anexo_convenio_5291: novoCalculo?.decisao_manual?.anexo_convenio_5291 || null,
       aliq_interna: num(novoCalculo?.aliq_interna),
       icms_proprio: num(novoCalculo?.valor_icms_proprio),
       fcp_percentual: num(novoCalculo?.fcp_percentual),
@@ -228,6 +230,7 @@ export function obterCalculoExibivel(produto: any, calculoAutomatico: any): any 
       modo: cg.modo_decisao,
       mva_informada: p.mva_informada ?? null,
       mva_ja_ajustada: !!p.mva_ja_ajustada,
+      anexo_convenio_5291: p.anexo_convenio_5291 || null,
       congelado: true,
     },
     _congelado: true,

@@ -23,6 +23,7 @@ export function parsearNFe(xmlStr) {
     const ufFromIBGE = (code) => IBGE_UF[parseInt(code,10)] || "";
     let uf_origem  = ufFrom(emit, "enderEmit") || ufFromIBGE(get(ide,"cUF"));
     let uf_destino = ufFrom(dest, "enderDest") || ufFromIBGE(get(ide,"cUFDest") || get(ide,"UFDest"));
+    const infAdic = doc.getElementsByTagName("infAdic")[0];
     const nota = {
       chave: inf?.getAttribute("Id")||"", numero:get(ide,"nNF"), serie:get(ide,"serie"),
       data_emissao:get(ide,"dhEmi")||get(ide,"dEmi"), natureza_operacao:get(ide,"natOp"),
@@ -30,6 +31,8 @@ export function parsearNFe(xmlStr) {
       emitente_nome:get(emit,"xNome")||get(emit,"xFant"), emitente_cnpj:get(emit,"CNPJ"),
       destinatario_nome:get(dest,"xNome"), destinatario_cnpj:get(dest,"CNPJ")||get(dest,"CPF"),
       destinatario_ie:get(dest,"IE")||"", emitente_ie:get(emit,"IE")||"",
+      info_complementar:get(infAdic,"infCpl"),
+      info_adicional_fisco:get(infAdic,"infAdFisco"),
     };
     // Totais do XML (<ICMSTot>) — usados na conferência XML × cálculo.
     const tot = doc.getElementsByTagName("ICMSTot")[0];

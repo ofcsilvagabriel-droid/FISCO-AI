@@ -6,7 +6,7 @@ import { resolverPauta } from "@/modules/fiscal/engines/motorPauta";
 import { admitePauta, verificarSeTemPMC } from "@/modules/fiscal/engines/pmcDescritivo";
 import { isRegraConvenio, matchConvenioEstrito } from "@/modules/fiscal/engines/motorConvenio";
 import { RICMS_BA_ANEXO1 } from "@/modules/fiscal/data/ricmsBaAnexo1";
-import { CONV_52_91_INDUSTRIAL, CONV_52_91_AGRICOLA, beneficio5291 } from "@/modules/fiscal/data/conv5291";
+import { CONV_52_91_INDUSTRIAL, CONV_52_91_AGRICOLA, beneficio5291, identificarConv5291 } from "@/modules/fiscal/data/conv5291";
 import { calcularDIFAL as calcularDIFALMotor, buscarAliquotaInterestadual, buscarAliquotaInterna, isImportadoPorCSTOrig } from "@/modules/fiscal/data/aliquotasUF";
 import { interpretarCST, validarCST, validarReducaoBase, descreverCST } from "@/modules/fiscal/engines/motorCST";
 import { interpretarCFOP, descreverCFOP } from "@/modules/fiscal/engines/motorCFOP";
@@ -33,6 +33,7 @@ import { StatCard } from "@/components/ui/Stat";
 // (regra centralizada em src/modules/fiscal/domain/services)
 // ============================================================
 import { ArquivoFiscalService } from "@/modules/fiscal/domain/services";
+import { aplicarOverrides, REDUCAO_ANTECIPACAO_PCT, totaisAntecipacao as totaisAntecipacaoPura } from "@/modules/fiscal/domain/engines/simulacaoFiscal";
 const loadArquivo = () => ArquivoFiscalService.load();
 // Identificação do usuário para rastreabilidade dos congelamentos
 const usuarioAtual = (() => { try { return localStorage.getItem("fiscoai:usuario") || "Usuário"; } catch { return "Usuário"; } })();
@@ -42,6 +43,24 @@ const chaveEmpresa = (cnpj, nome) => ArquivoFiscalService.chaveEmpresa(cnpj, nom
 // REGRA 2 — memória de apuração é estritamente individual por empresa.
 const empresaIdDe = (nota) => String(nota?.destinatario_cnpj || "").replace(/\D/g, "")
   || (nota?.destinatario_nome ? `NOME:${String(nota.destinatario_nome).toUpperCase().trim()}` : "SEM_EMPRESA");
+const numeroSeguro = (v) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+const arredondarCentavos = (v) => Math.round((numeroSeguro(v) + Number.EPSILON) * 100) / 100;
+function totaisAntecipacao(calculos = []) {
+  return totaisAntecipacaoPura(calculos);
+}
+function totaisAntecipacaoRegistro(registro) {
+  const bruto = numeroSeguro(registro?.totais?.antecipacao);
+  return {
+    bruto,
+    comReducao: registro?.totais?.antecipacaoComReducao == null
+      ? arredondarCentavos(bruto * (1 - REDUCAO_ANTECIPACAO_PCT / 100))
+      : numeroSeguro(registro.totais.antecipacaoComReducao),
+    reducaoPct: bruto ? numeroSeguro(registro?.totais?.reducaoAntecipacaoPct) || REDUCAO_ANTECIPACAO_PCT : 0,
+  };
+}
 function upsertRegistroArquivo(arq, nota, produtos, calculos) {
   const dest = {
     cnpj: nota.destinatario_cnpj || "",
@@ -51,10 +70,13 @@ function upsertRegistroArquivo(arq, nota, produtos, calculos) {
   const key = chaveEmpresa(dest.cnpj, dest.nome);
   const mesAno = mesAnoFromData(nota.data_emissao);
   const valorTotal = produtos.reduce((s, p) => s + (p.valor_total || 0), 0);
+  const antecipacao = totaisAntecipacao(calculos);
   const totais = {
     icmsProprio: calculos.reduce((s, c) => s + (c.valor_icms_proprio || 0), 0),
     icmsST: calculos.reduce((s, c) => s + (c.tributacao === "ICMS_ST" ? (c.valor_icms_st || 0) : 0), 0),
-    antecipacao: calculos.reduce((s, c) => s + (c.tributacao === "ANTECIPACAO" ? (c.valor_icms_st || 0) : 0), 0),
+    antecipacao: antecipacao.bruto,
+    antecipacaoComReducao: antecipacao.comReducao,
+    reducaoAntecipacaoPct: antecipacao.reducaoPct,
     difal: calculos.reduce((s, c) => s + (c.valor_difal || 0), 0),
     ipi: produtos.reduce((s, p) => s + (p.valor_ipi || 0), 0),
     frete: produtos.reduce((s, p) => s + (p.valor_frete || 0), 0),
@@ -69,6 +91,8 @@ function upsertRegistroArquivo(arq, nota, produtos, calculos) {
     dataEmissao: nota.data_emissao || "",
     mesAno,
     naturezaOperacao: nota.natureza_operacao || "",
+    infoComplementar: nota.info_complementar || "",
+    infoAdicionalFisco: nota.info_adicional_fisco || "",
     destinatarioIe: nota.destinatario_ie || "",
     emitenteNome: nota.emitente_nome || "",
     emitenteCnpj: nota.emitente_cnpj || "",
@@ -221,17 +245,18 @@ function exportarArquivoPDF(empresa, mesAno, registros, options = {}) {
     valorTotal: s.valorTotal + (r.valorTotal || 0),
     icmsProprio: s.icmsProprio + (r.totais?.icmsProprio || 0),
     icmsST: s.icmsST + (r.totais?.icmsST || 0),
-    antecipacao: s.antecipacao + (r.totais?.antecipacao || 0),
+    antecipacao: s.antecipacao + totaisAntecipacaoRegistro(r).bruto,
+    antecipacaoComReducao: s.antecipacaoComReducao + totaisAntecipacaoRegistro(r).comReducao,
     difal: s.difal + (r.totais?.difal || 0),
     ipi: s.ipi + (r.totais?.ipi || 0),
     frete: s.frete + (r.totais?.frete || 0),
     icmsCalcTotal: s.icmsCalcTotal + (r.totais?.icmsCalcTotal || 0),
-  }), { valorTotal:0, icmsProprio:0, icmsST:0, antecipacao:0, difal:0, ipi:0, frete:0, icmsCalcTotal:0 });
+  }), { valorTotal:0, icmsProprio:0, icmsST:0, antecipacao:0, antecipacaoComReducao:0, difal:0, ipi:0, frete:0, icmsCalcTotal:0 });
 
   autoTable(doc, {
     startY: 125,
-    head: [["Valor Total NF-e", "ICMS Próprio", "ICMS-ST", "Antecipação", "DIFAL", "IPI", "Frete", "ICMS Calc. Total"]],
-    body: [[fmt(tot.valorTotal), fmt(tot.icmsProprio), fmt(tot.icmsST), fmt(tot.antecipacao), fmt(tot.difal), fmt(tot.ipi), fmt(tot.frete), fmt(tot.icmsCalcTotal)]],
+    head: [["Valor Total NF-e", "ICMS Próprio", "ICMS-ST", "Antecipação bruta", `Antecipação c/ redução (${REDUCAO_ANTECIPACAO_PCT}%)`, "DIFAL", "IPI", "Frete", "ICMS Calc. Total"]],
+    body: [[fmt(tot.valorTotal), fmt(tot.icmsProprio), fmt(tot.icmsST), fmt(tot.antecipacao), fmt(tot.antecipacaoComReducao), fmt(tot.difal), fmt(tot.ipi), fmt(tot.frete), fmt(tot.icmsCalcTotal)]],
     headStyles: { fillColor: [45, 55, 72], textColor: 255, fontSize: 9 },
     bodyStyles: { fontSize: 10, fontStyle: "bold" },
     margin: { left: 40, right: 40 },
@@ -241,16 +266,17 @@ function exportarArquivoPDF(empresa, mesAno, registros, options = {}) {
   // Tabela de NF-e
   autoTable(doc, {
     startY: doc.lastAutoTable.finalY + 18,
-    head: [["#", "NF", "Série", "Emissão", "Emitente", "UF", "Valor", "ICMS Próp.", "ICMS-ST", "Antecip.", "DIFAL"]],
+    head: [["#", "NF", "Série", "Emissão", "Emitente", "UF", "Valor", "ICMS Próp.", "ICMS-ST", "Antec. bruta", "Antec. reduzida", "DIFAL"]],
     body: registros.map((r, i) => [
       i + 1, r.numero || "—", r.serie || "—",
       r.dataEmissao ? r.dataEmissao.slice(0, 10) : "—",
       r.emitenteNome || "—",
-      `${r.ufOrigem || "?"}→${r.ufDestino || "?"}`,
+      `${r.ufOrigem || "?"} para ${r.ufDestino || "?"}`,
       fmt(r.valorTotal),
       fmt(r.totais?.icmsProprio),
       fmt(r.totais?.icmsST),
-      fmt(r.totais?.antecipacao),
+      fmt(totaisAntecipacaoRegistro(r).bruto),
+      fmt(totaisAntecipacaoRegistro(r).comReducao),
       fmt(r.totais?.difal),
     ]),
     headStyles: { fillColor: [26, 54, 93], textColor: 255, fontSize: 9 },
@@ -290,13 +316,14 @@ function exportarArquivoPDF(empresa, mesAno, registros, options = {}) {
         ["Número / Série", `${r.numero || "—"} / ${r.serie || "—"}`, "Emissão", r.dataEmissao ? r.dataEmissao.slice(0, 10) : "—"],
         ["Chave de acesso", (r.chaveNFe || "—").replace(/^NFe/, ""), "Natureza da operação", r.naturezaOperacao || "—"],
         ["Emitente", `${r.emitenteNome || "—"} (${formatCNPJ(r.emitenteCnpj)})`, "Destinatário", `${empresa.razaoSocial || "—"} (${formatCNPJ(empresa.cnpj)}) · IE ${r.destinatarioIe || empresa.ie || "ISENTO"}`],
-        ["UF origem → destino", `${r.ufOrigem || "?"} → ${r.ufDestino || "?"}`, "Valor total da NF-e", fmt(tx.valor_total || r.valorTotal)],
+        ["UF origem para destino", `${r.ufOrigem || "?"} para ${r.ufDestino || "?"}`, "Valor total da NF-e", fmt(tx.valor_total || r.valorTotal)],
         ["Valor dos produtos", fmt(tx.valor_produtos ?? r.valorTotal), "Descontos", fmt(tx.valor_desconto)],
         ["Frete", fmt(tx.valor_frete ?? r.totais?.frete), "Seguro", fmt(tx.valor_seguro)],
         ["Outras despesas", fmt(tx.valor_outras_desp), "IPI", fmt(tx.valor_ipi ?? r.totais?.ipi)],
         ["ICMS próprio (XML)", fmt(tx.valor_icms), "ICMS-ST (XML)", fmt(tx.valor_icms_st)],
-        ["ICMS próprio (calculado)", fmt(r.totais?.icmsProprio), "ICMS-ST / Antecip. (calculado)", `${fmt(r.totais?.icmsST)} / ${fmt(r.totais?.antecipacao)}`],
-        ["DIFAL (calculado)", fmt(r.totais?.difal), "ICMS total calculado", fmt(r.totais?.icmsCalcTotal)],
+        ["ICMS próprio (calculado)", fmt(r.totais?.icmsProprio), "ICMS-ST (calculado)", fmt(r.totais?.icmsST)],
+        ["Antecipação bruta / reduzida", `${fmt(totaisAntecipacaoRegistro(r).bruto)} / ${fmt(totaisAntecipacaoRegistro(r).comReducao)}`, "DIFAL (calculado)", fmt(r.totais?.difal)],
+        ["ICMS total calculado", fmt(r.totais?.icmsCalcTotal), "", ""],
       ],
       headStyles: { fillColor: [45, 55, 72], textColor: 255, fontSize: 7.5, cellPadding: 1.5 },
       bodyStyles: { fontSize: 6.5, cellPadding: 1.2 },
@@ -316,7 +343,7 @@ function exportarArquivoPDF(empresa, mesAno, registros, options = {}) {
         `${(p.quantidade || 0)} ${p.unidade || ""}`.trim(),
         fmt(p.valor_unitario), fmt(p.valor_total),
         (p.metodo_pauta && p.metodo_pauta !== "MVA")
-          ? `${p.metodo_pauta} ${fmt(p.valor_pmc || p.valor_pauta_unitario)} → BC ${fmt(p.base_st)}`
+          ? `${p.metodo_pauta} ${fmt(p.valor_pmc || p.valor_pauta_unitario)} para BC ${fmt(p.base_st)}`
           : "—",
         fmt(p.base_calc) + (p.icms_proprio_presumido ? " (presum.)" : ""), pct(p.aliquota_presumida||p.aliquota_aplicada),
         fmt(p.valor_icms_proprio) + (p.icms_proprio_presumido ? " (presum.)" : ""),
@@ -358,6 +385,18 @@ function exportarArquivoPDF(empresa, mesAno, registros, options = {}) {
       headStyles: { fillColor: [45, 55, 72], textColor: 255, fontSize: 7, cellPadding: 1.5 },
       bodyStyles: { fontSize: 6.5, cellPadding: 1.2 },
       columnStyles: { 0: { cellWidth: 320 }, 1: { halign: "center" }, 2: { halign: "right" } },
+      margin: { left: 40, right: 40 },
+      theme: "grid",
+      didDrawPage: rodape,
+    });
+
+    const infoComplementar = [r.infoComplementar, r.infoAdicionalFisco].filter(Boolean).join("\n\n");
+    autoTable(doc, {
+      startY: doc.lastAutoTable.finalY + 6,
+      head: [["Informações complementares"]],
+      body: [[doc.splitTextToSize(infoComplementar || "Sem informações complementares", W - 95)]],
+      headStyles: { fillColor: [45, 55, 72], textColor: 255, fontSize: 7, cellPadding: 1.5 },
+      bodyStyles: { fontSize: 6.5, cellPadding: 2, valign: "top" },
       margin: { left: 40, right: 40 },
       theme: "grid",
       didDrawPage: rodape,
@@ -663,7 +702,7 @@ function analisarProduto(produto, ufOrigem, ufDestino) {
     if (r.tipo==="ICMS_ST" && ufDestino!=="BA" && ufOrigem!=="BA") { descartadasUF++; continue; }
 
     // -------- CONVÊNIO ICMS: enquadramento ESTRITO --------
-    // NCM 8 dígitos idênticos + descrição compatível. Motor de pontuação
+    // NCM definido na regra; descrição da redução permanece em auditoria. Motor de pontuação
     // NÃO é usado para regras cuja fonte é Convênio ICMS.
     if (isRegraConvenio(r)) {
       const est = matchConvenioEstrito(produto, r);
@@ -675,7 +714,7 @@ function analisarProduto(produto, ufOrigem, ufDestino) {
           ncm_encontrado: produto.ncm,
           match_score: 100,
           match_por: ["CONVENIO_ESTRITO"],
-          match_detalhe: "NCM 8d + Descrição",
+          match_detalhe: est.descCompativel ? "NCM + descrição" : "NCM (descrição para revisão)",
           fonte_pdf: r._fonte,
           motor_enquadramento: "convenio_estrito",
           enquadramento: {
@@ -693,11 +732,11 @@ function analisarProduto(produto, ufOrigem, ufDestino) {
             decisao: decisaoTxt,
             justificativa,
           },
-          revisao: false,
+          revisao: !est.descCompativel,
           validacao_pdf: (r.tipo==="ISENCAO" || r.tipo==="REDUCAO_BC") ? {
             fonte: r._fonte, item_id: r.id, ncm_pdf: r.ncm, cest_pdf: r.cest || null,
             condicao: r.condicao || "Verificar enquadramento no Convênio.",
-            status: "APLICADO_REQUER_CONFIRMACAO",
+            status: est.descCompativel ? "APLICADO_REQUER_CONFIRMACAO" : "REVISAR_DESCRICAO",
           } : null,
         };
         resultados.push(regraOut);
@@ -1074,7 +1113,7 @@ function calcAntecipacaoParcial(produto, ufOrigem, ufDestino, aliqInter, vProd, 
   // ICMS de origem (destacado) NÃO é alterado — apenas a BC de destino.
   // PROTEÇÃO: quando o CST da NF já indica base reduzida (ex.: 20/70), a nova
   // redução via Convênio é vedada — dupla redução não é permitida.
-  const b5291bruto = beneficio5291(produto.ncm, ufOrigem, ufDestino, aliqInterna);
+  const b5291bruto = beneficio5291(produto.ncm, ufOrigem, ufDestino, aliqInterna, produto.descricao, produto.decisao_manual?.anexo_convenio_5291);
   const b5291 = (b5291bruto && !bloquearReducao) ? b5291bruto : null;
   const baseFinal = b5291 ? baseAntecip * b5291.perc_base_reduzida : baseAntecip;
   const icmsDestino = baseFinal * (aliqInterna / 100);
@@ -1180,11 +1219,13 @@ function aplicarFCP(calc, fcpPct) {
   return calc;
 }
 
-function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
-  const regras = produto.analise.filter(a => a.tipo !== "NAO_ENCONTRADO" && a.tipo !== "ST_SUGERIDA");
-  const sugerida = produto.analise.find(a => a.tipo === "ST_SUGERIDA");
-  let vProd = produto.valor_total || 0;
+export function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
+  const regras = (produto.analise || []).filter(a => a.tipo !== "NAO_ENCONTRADO" && a.tipo !== "ST_SUGERIDA" && !a.id?.startsWith("CONV_52_91"));
+  const sugerida = (produto.analise || []).find(a => a.tipo === "ST_SUGERIDA");
+  const removerReducoes = !!(produto.decisao_manual?.remover_reducoes || produto.remover_reducoes);
+  const vProd = numeroSeguro(produto.valor_total);
   const aliqInter = getAliqInterestadual(ufOrigem, ufDestino);
+  const aliqInternaDestino = buscarAliquotaInterna(ufDestino);
 
 
   // ============================================================
@@ -1202,7 +1243,7 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
   // a memória de cálculo gravada para o NCM do produto.
   // ============================================================
   const dmProduto = produto.decisao_manual || null;
-  let decisaoManual = (dmProduto && dmProduto.modo && dmProduto.modo !== "AUTO") ? dmProduto : null;
+  let decisaoManual = (dmProduto && dmProduto.modo && !["AUTO", "CONVENIO_52_91"].includes(dmProduto.modo)) ? dmProduto : null;
   let versaoApuracao = null;
   // PAUTA (PMC/PMPF na NF): nunca usa memória — sempre recalcula conforme o
   // preço informado no próprio documento fiscal.
@@ -1212,14 +1253,15 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
   if (bloquearMemoriaPauta) {
     logTecnico.push(`[MEMORIA_PAUTA_IGNORADA] NCM ${produto.ncm || "—"} — produto com ${admissaoMemoria.tipo} (R$ ${Number(admissaoMemoria.valor || 0).toFixed(2)}) na NF: histórico protegido não reaplicado, recálculo individual por pauta.`);
   }
-  if (!bloquearMemoriaPauta && !decisaoManual && !(dmProduto && dmProduto.modo === "AUTO")) {
+  if (!produto.__simulacao && !bloquearMemoriaPauta && !decisaoManual && !(dmProduto && ["AUTO", "CONVENIO_52_91"].includes(dmProduto.modo))) {
     // 2) Histórico de apuração por NCM (ALTERADO > CONGELADO > AUTOMÁTICO)
     try { versaoApuracao = HistoricoApuracaoService.obterVersaoValidaParaNCM(produto.ncm, produto.empresa_id || "SEM_EMPRESA", descProdutoPauta, aliqInter); }
     catch { versaoApuracao = null; }
     if (versaoApuracao && versaoApuracao.origem_memoria !== "AUTOMATICO_ANTERIOR") {
       const dmHist = HistoricoApuracaoService.comoDecisaoManual(versaoApuracao);
       if (dmHist) {
-        decisaoManual = dmHist;
+        if (dmHist.modo === "CONVENIO_52_91") produto = { ...produto, decisao_manual: dmHist };
+        else decisaoManual = dmHist;
         logTecnico.push(`[MEMORIA_APURACAO] NCM ${produto.ncm} — aplicando versão v${versaoApuracao.versao_apuracao} (${versaoApuracao.origem_memoria}) da apuração anterior.`);
         alertas.push({
           tipo: "MEMORIA_APURACAO_APLICADA",
@@ -1235,6 +1277,9 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
       });
     }
   }
+
+  const conv5291 = identificarConv5291(produto.ncm, produto.descricao, produto.decisao_manual?.anexo_convenio_5291);
+  if (conv5291) regras.push(conv5291.regra);
 
 
 
@@ -1357,13 +1402,14 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
 
   const withCST = (obj) => ({
     ...obj,
+    ...(produto.decisao_manual?.modo === "CONVENIO_52_91" ? { decisao_manual: produto.decisao_manual } : {}),
     permissoes_cfop: permCFOP,
     gate_tributario: gate,
     bloqueios: gate.bloqueios,
     permissoes_cst: permCST,
     memoria_calculo: [ ...memoriaCalc, ...(obj.etapas_calculo?.map(e=>`${e.etapa}: R$ ${(e.valor||0).toFixed(2)}`) || []) ],
     log_tecnico: [ ...logTecnico, ...(obj.log_tecnico||[]) ],
-    alertas: [ ...alertas, ...(obj.alertas||[]) ],
+    alertas: [ ...alertas, ...(obj.beneficio_5291?.revisao_anexo ? [{ tipo: "REVISAR_ANEXO_CONVENIO", mensagem: "NCM consta em mais de uma hipótese do Convênio 52/91; confira a descrição e o Anexo aplicado.", fundamento: obj.beneficio_5291.fundamento }] : []), ...(obj.alertas||[]) ],
     validacoes: val,
     cesta_basica: cestaBasica,
     memoria_apuracao: versaoApuracao || null,
@@ -1492,31 +1538,30 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
   // (CST 20/70 → base já foi reduzida na origem; qualquer nova
   //  redução por Convênio/Benefício deve ser BLOQUEADA).
   // -----------------------------------------------------------
-  const bloquearReducaoConvenio = !!permCST.baseReduzida;
-  if (bloquearReducaoConvenio) {
+  const bloquearReducaoConvenio = removerReducoes;
+  if (permCST.baseReduzida && !removerReducoes) {
     logTecnico.push(`[OK] CST ${permCST.codigo} — base já reduzida no XML.`);
     memoriaCalc.push(`Base Original (vProd): R$ ${vProd.toFixed(2)}`);
     memoriaCalc.push(`Base Reduzida no XML (vBC): R$ ${(produto.base_icms||0).toFixed(2)}`);
-    // Quando o CST indica base já reduzida (ex.: CST 20/70), o sistema NÃO deve
-    // aplicar qualquer nova redução e deve considerar como base de cálculo o
-    // valor da coluna "B. Calc. ICMS" (vBC) da NF-e, e não o valor total do item.
-    if ((produto.base_icms || 0) > 0) {
-      logTecnico.push(`[AÇÃO] CST ${permCST.codigo} — usando vBC (R$ ${produto.base_icms.toFixed(2)}) como base de cálculo em vez do valor total (R$ ${vProd.toFixed(2)}).`);
-      vProd = produto.base_icms;
-    }
-    // Remove qualquer regra de REDUCAO_BC do conjunto para impedir enquadramento
-    // em outras reduções — vedada dupla redução.
+    // vBC do XML corresponde ao ICMS próprio da origem. Na apuração do destino,
+    // a base é reconstruída da operação para não reduzir duas vezes o mesmo valor.
+  }
+  if (removerReducoes) {
+    const compIntegral = extrairComponentesBaseICMS(produto);
+    const baseIntegral = calcularBaseICMS(vProd, compIntegral.frete, compIntegral.seguro, compIntegral.outrasDespesas, compIntegral.desconto);
     const antes = regras.length;
     for (let i = regras.length - 1; i >= 0; i--) {
       if (regras[i].tipo === "REDUCAO_BC") regras.splice(i, 1);
     }
-    if (antes !== regras.length) {
+    logTecnico.push(`[REDUCAO_REMOVIDA] Base XML reduzida: R$ ${numeroSeguro(produto.base_icms).toFixed(2)}. Base integral aplicada: R$ ${baseIntegral.toFixed(2)}.`);
+    memoriaCalc.push(`Base reduzida original: R$ ${numeroSeguro(produto.base_icms).toFixed(2)}`);
+    memoriaCalc.push(`Base integral aplicada: R$ ${baseIntegral.toFixed(2)}`);
+    if (antes !== regras.length || numeroSeguro(produto.reducao_bc_xml) > 0 || permCST.baseReduzida) {
       alertas.push({
-        tipo:"REDUCAO_BLOQUEADA",
-        mensagem:`CST ${permCST.codigo} — base já reduzida na NF. Enquadramento em outras reduções foi ignorado.`,
-        fundamento: permCST.fundamento,
+        tipo: "REDUCAO_REMOVIDA_MANUALMENTE",
+        mensagem: "Reduções de base foram removidas manualmente; foi usada a base integral da operação.",
+        fundamento: "Decisão manual do usuário",
       });
-      logTecnico.push(`[AÇÃO] Regras de REDUCAO_BC descartadas — CST ${permCST.codigo} não admite nova redução.`);
     }
   }
 
@@ -1543,12 +1588,12 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
     if (dm.modo === "ISENTO" || dm.modo === "NAO_TRIBUTADO") {
       const isento = dm.modo === "ISENTO";
       logTecnico.push(isento
-        ? "[MANUAL_ISENTO] Usuário reclassificou como isento (cesta básica)."
-        : "[MANUAL_NAO_TRIBUTADO] Usuário reclassificou como não tributado (cesta básica).");
+        ? "[MANUAL_ISENTO] Usuário reclassificou como isento."
+        : "[MANUAL_NAO_TRIBUTADO] Usuário reclassificou como não tributado.");
       return withCST({
         tributacao: isento ? "ISENTO" : "NAO_TRIBUTADO",
         fundamento: cestaBasica?.fundamentoLegal
-          || (isento ? "Decisão manual — isenção (cesta básica)" : "Decisão manual — não tributado (cesta básica)"),
+          || (isento ? "Decisão manual — isenção" : "Decisão manual — não tributado"),
         base_calc: 0, aliquota_aplicada: 0, valor_icms_proprio: 0,
         base_st: 0, mva_utilizada: 0, valor_icms_st: 0, valor_icms_total: 0,
         economia: produto.valor_icms || 0,
@@ -1570,11 +1615,14 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
       const mvaInf = Number(dm.mva_informada) || 0;
       const mvaAj = dm.mva_ja_ajustada
         ? mvaInf
-        : (aliqDest >= ALIQ_INTERNA_BA
+        : (aliqDest >= aliqInternaDestino
             ? mvaInf
-            : +(((1 + mvaInf/100) * (1 - aliqDest/100) / (1 - ALIQ_INTERNA_BA/100) - 1) * 100).toFixed(4));
+            : +(((1 + mvaInf/100) * (1 - aliqDest/100) / (1 - aliqInternaDestino/100) - 1) * 100).toFixed(4));
       const vICMSProprio = resolverIcmsProprio();
       const baseICMSm = extrairComponentesBaseICMS(produto);
+      const b5291m = !bloquearReducaoConvenio && dm.aplicar_reducao_5291
+        ? beneficio5291(produto.ncm, ufOrigem, ufDestino, aliqInternaDestino, produto.descricao, dm.anexo_convenio_5291)
+        : null;
       const rST = calcularSTcomBeneficio({
         valorProduto: vProd,
         frete: baseICMSm.frete,
@@ -1582,10 +1630,10 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
         outrasDespesas: baseICMSm.outrasDespesas,
         desconto: baseICMSm.desconto,
         mva: mvaAj, mvaAjustada: mvaAj, mvaOriginal: mvaInf,
-        cargaEfetiva: null, aliquotaInterna: ALIQ_INTERNA_BA,
+        cargaEfetiva: b5291m?.carga_efetiva ?? null, aliquotaInterna: aliqInternaDestino,
         icmsProprio: vICMSProprio, fcpPercentual: produto.fcp_percentual || 0,
         fundamentoST: "Cálculo manual — decisão do usuário",
-        fundamentoBeneficio: null,
+        fundamentoBeneficio: b5291m?.fundamento || null,
       });
       logTecnico.push(`[MANUAL] Recálculo como ICMS-ST · MVA informada ${mvaInf}% ${dm.mva_ja_ajustada ? "(já ajustada)" : `(ajustada p/ ${mvaAj}%)`}${dm.origem_memoria ? ` · via memória NCM ${dm.memoria_ncm}` : ""}.`);
       return withCST({
@@ -1594,10 +1642,11 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
         base_calc: vProd, aliquota_aplicada: aliqInter,
         valor_icms_proprio: vICMSProprio,
         base_st: rST.bc_st_reduzida, mva_utilizada: mvaAj, mva_informada: mvaInf,
-        mva_ja_ajustada: !!dm.mva_ja_ajustada, aliq_interna: ALIQ_INTERNA_BA,
+        mva_ja_ajustada: !!dm.mva_ja_ajustada, aliq_interna: aliqInternaDestino,
         valor_icms_st: rST.icms_st,
         valor_icms_total: vICMSProprio + rST.icms_st + rST.fcp_st,
         valor_fcp_st: rST.fcp_st,
+        beneficio_5291: b5291m,
         fcp_percentual: produto.fcp_percentual || 0,
         etapas_calculo: rST.etapas, memoria_calculo: rST.memoria,
         icms_nf_original: produto.valor_icms || 0,
@@ -1632,7 +1681,7 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
     // Convênio ICMS 52/91 — se enquadrado, aplica base reduzida também no DIFAL.
     // Regra de proteção: se CST 20/70 (base já reduzida na origem), NÃO aplicar
     // nova redução no destino — evita dupla redução de base.
-    const b5291 = beneficio5291(produto.ncm, ufOrigem, ufDestino, r.aliq_interna);
+    const b5291 = beneficio5291(produto.ncm, ufOrigem, ufDestino, r.aliq_interna, produto.descricao, produto.decisao_manual?.anexo_convenio_5291);
     let baseFinal = r.base_calculo;
     let icmsDestinoFinal = r.icms_destino;
     let difalFinal = r.difal;
@@ -1723,7 +1772,7 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
       || sugerida?.fundamento
       || "RICMS/BA – Decreto 13.780/2012 c/c Convênio ICMS 142/18 (pauta PMC/PMPF/MVA)";
     const aliqDestacada = (produto.aliquota_icms != null && produto.aliquota_icms > 0) ? produto.aliquota_icms : (aliquotaIcmsUtilizada || aliqInter);
-    const mvaFallback = regraST ? (getMvaAjustada(regraST, aliqDestacada) || 0) : 0;
+    const mvaFallback = regraST ? (getMvaAjustada(regraST, aliqDestacada, aliqInternaDestino) || 0) : 0;
     // ICMS próprio = sempre o vICMS destacado no item da NF-e (fallback só se ausente)
     const icmsProprio = resolverIcmsProprio();
     const r = calcularSTporPauta({
@@ -1736,22 +1785,29 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
       frete: produto.valor_frete || 0,
       seguro: produto.valor_seguro || 0,
       despesas: (produto.outrasDespesas || produto.valor_outras_desp || 0) - (produto.valor_desconto || 0),
-      aliquotaInterna: ALIQ_INTERNA_BA,
+      aliquotaInterna: aliqInternaDestino,
       icmsProprio,
     });
-    logTecnico.push(`[PAUTA_RECALCULADA] NCM ${produto.ncm || "—"} — ${admissao.tipo} R$ ${Number(admissao.valor || 0).toFixed(2)} (desta NF) → ICMS-ST R$ ${Number(r.icms_st || 0).toFixed(2)} · cálculo individual, sem uso de memória.`);
+    const beneficioPauta = !bloquearReducaoConvenio
+      ? beneficio5291(produto.ncm, ufOrigem, ufDestino, aliqInternaDestino, produto.descricao, produto.decisao_manual?.anexo_convenio_5291)
+      : null;
+    const basePauta = beneficioPauta ? r.base_calculo * beneficioPauta.perc_base_reduzida : r.base_calculo;
+    const stPauta = Math.max(0, basePauta * (aliqInternaDestino / 100) - icmsProprio);
+    logTecnico.push(`[PAUTA_RECALCULADA] NCM ${produto.ncm || "—"} — ${admissao.tipo} R$ ${Number(admissao.valor || 0).toFixed(2)} (desta NF) → ICMS-ST R$ ${stPauta.toFixed(2)} · cálculo individual, sem uso de memória.`);
     return withCST({
       tributacao: "ICMS_ST",
-      fundamento: `${fundamentoBase} — pauta ${r.metodo}`,
+      fundamento: `${fundamentoBase} — pauta ${r.metodo}${beneficioPauta ? ` + ${beneficioPauta.fundamento}` : ""}`,
       base_calc: vProd,
       aliquota_aplicada: aliqInter,
       valor_icms_proprio: icmsProprio,
-      base_st: r.base_calculo,
+      base_st: basePauta,
+      base_st_original: r.base_calculo,
       mva_utilizada: r.metodo === "MVA" ? mvaFallback : 0,
-      aliq_interna: ALIQ_INTERNA_BA,
-      valor_icms_st: r.icms_st,
-      valor_icms_total: icmsProprio + r.icms_st,
-      economia: 0,
+      aliq_interna: aliqInternaDestino,
+      valor_icms_st: stPauta,
+      valor_icms_total: icmsProprio + stPauta,
+      economia: beneficioPauta ? Math.max(0, r.icms_st - stPauta) : 0,
+      beneficio_5291: beneficioPauta,
       icms_nf_original: produto.valor_icms || 0,
       metodo_pauta: r.metodo,
       fonte_pauta: r.fonte_pauta,
@@ -1762,7 +1818,7 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
       fundamento_pauta: pautaResolvida.fundamento || fundamentoBase,
       revisao: !regraST || (r.avisos || []).length > 0,
       alertas: r.avisos || [],
-      obs: `Pauta ${r.metodo} aplicada: ${r.formula} · ICMS-ST = (BC × ${ALIQ_INTERNA_BA}%) − ICMS próprio (${icmsProprio.toFixed(2)}) = ${r.icms_st.toFixed(2)}${admissao.origem==="descricao" ? ` · ${admissao.tipo} extraído do descritivo (${admissao.encontradoEm})` : ""}${(r.avisos||[]).length ? ` · ⚠ ${r.avisos.map(a=>a.mensagem).join(" ")}` : ""}`,
+      obs: `Pauta ${r.metodo} aplicada: ${r.formula}${beneficioPauta ? ` · BC reduzida pelo Conv. 52/91 a ${basePauta.toFixed(2)}` : ""} · ICMS-ST = (BC × ${aliqInternaDestino}%) − ICMS próprio (${icmsProprio.toFixed(2)}) = ${stPauta.toFixed(2)}${admissao.origem==="descricao" ? ` · ${admissao.tipo} extraído do descritivo (${admissao.encontradoEm})` : ""}${(r.avisos||[]).length ? ` · ⚠ ${r.avisos.map(a=>a.mensagem).join(" ")}` : ""}`,
     });
   }
 
@@ -1794,8 +1850,14 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
   }
 
 
-  // Prioridade: ISENCAO > REDUCAO_BC > ICMS_ST
-  const regra = regras.find(r=>r.tipo==="ISENCAO") || regras.find(r=>r.tipo==="REDUCAO_BC") || regras[0];
+  // A redução do Conv. 52/91 é benefício de base, não regime concorrente:
+  // mantém ST/antecipação quando devidos e aplica a carga reduzida nesses motores.
+  const regraReducao = regras.find(r=>r.tipo==="REDUCAO_BC");
+  const regraST = regras.find(r=>r.tipo==="ICMS_ST");
+  if (ehAntecipacao && regraReducao?.id?.startsWith("CONV_52_91") && (!regraST || !gate.liberado.ICMS_ST)) {
+    return withCST(calcAntecipacaoParcial(produto, ufOrigem, ufDestino, aliqInter, vProd, false, bloquearReducaoConvenio, icmsProprioFinal));
+  }
+  const regra = regras.find(r=>r.tipo==="ISENCAO") || (regraReducao && regraST && gate.liberado.ICMS_ST ? regraST : null) || regraReducao || regras[0];
 
   if (regra.tipo === "ISENCAO") {
     return withCST({
@@ -1849,7 +1911,7 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
     }
 
     // Determina carga efetiva conforme tipo de operação
-    const sulSudeste = ["SP","RJ","MG","ES","RS","SC","PR"];
+    const sulSudeste = ["SP","RJ","MG","RS","SC","PR"];
     let cargaStr;
     if (ufOrigem === ufDestino) {
       cargaStr = regra.carga_interna;
@@ -1858,14 +1920,17 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
     } else {
       cargaStr = regra.carga_inter_demais;
     }
-    const cargaEfetiva = parsePct(cargaStr) || 8.80;
-    // Alíquota nominal interestadual
-    const aliqNominal = aliqInter; // ex: 12%
-    // Base reduzida: BC = vProd × (carga_efetiva / aliq_nominal)
-    const fatorReducao = cargaEfetiva / aliqNominal;
-    const baseReduzida = vProd * fatorReducao;
+    const cargaEfetiva = parsePct(cargaStr);
+    const aliqNominal = numeroSeguro(produto.aliquota_icms) || (ufOrigem === ufDestino ? buscarAliquotaInterna(ufDestino) : aliqInter);
+    const beneficioProprio = regra.id?.startsWith("CONV_52_91")
+      ? beneficio5291(produto.ncm, ufOrigem, ufDestino, aliqNominal, produto.descricao, produto.decisao_manual?.anexo_convenio_5291)
+      : null;
+    const fatorReducao = cargaEfetiva != null && aliqNominal > 0 ? Math.min(1, cargaEfetiva / aliqNominal) : 1;
+    const compReducao = extrairComponentesBaseICMS(produto);
+    const baseOperacao = calcularBaseICMS(vProd, compReducao.frete, compReducao.seguro, compReducao.outrasDespesas, compReducao.desconto);
+    const baseReduzida = baseOperacao * fatorReducao;
     const valorICMS = baseReduzida * (aliqNominal / 100);
-    const icmsOriginal = icmsProprioFinal || produto.valor_icms || (vProd * aliqNominal / 100);
+    const icmsOriginal = icmsProprioFinal || produto.valor_icms || (baseOperacao * aliqNominal / 100);
     return withCST({
       tributacao: "REDUCAO_BC",
       fundamento: regra.fundamento,
@@ -1873,6 +1938,7 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
       aliquota_aplicada: aliqNominal,
       carga_efetiva: cargaEfetiva,
       fator_reducao: fatorReducao,
+      beneficio_5291: beneficioProprio,
       valor_icms_proprio: valorICMS,
       base_st: 0,
       mva_utilizada: 0,
@@ -1912,7 +1978,7 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
 
     // MVA ajustada é SEMPRE calculada com base na alíquota destacada no item da NF-e
     const aliqDestacada = (produto.aliquota_icms != null && produto.aliquota_icms > 0) ? produto.aliquota_icms : (aliquotaIcmsUtilizada || aliqInter);
-    const mvaAjustada = getMvaAjustada(regra, aliqDestacada);
+    const mvaAjustada = getMvaAjustada(regra, aliqDestacada, aliqInternaDestino);
     if (mvaAjustada === null) {
       // MVA especial (PMPF, Ato COTEPE) — não calcula automaticamente
       return withCST({
@@ -1933,7 +1999,7 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
     // Convênio 52/91 aplicável? → aplica ST + Redução cumulativamente
     // PROTEÇÃO: se CST 20/70, a base já foi reduzida na origem → NÃO aplicar
     // nova redução via Convênio (dupla redução vedada).
-    const b5291bruto = beneficio5291(produto.ncm, ufOrigem, ufDestino, ALIQ_INTERNA_BA);
+    const b5291bruto = beneficio5291(produto.ncm, ufOrigem, ufDestino, aliqInternaDestino, produto.descricao, produto.decisao_manual?.anexo_convenio_5291);
     const b5291 = (b5291bruto && !bloquearReducaoConvenio) ? b5291bruto : null;
     if (b5291bruto && bloquearReducaoConvenio) {
       alertas.push({
@@ -1958,7 +2024,7 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
       mva: mvaAjustada,
       mvaAjustada, mvaOriginal: regra.mva_original,
       cargaEfetiva: b5291 ? b5291.carga_efetiva : null,
-      aliquotaInterna: ALIQ_INTERNA_BA,
+      aliquotaInterna: aliqInternaDestino,
       icmsProprio: vICMSProprio,
       fcpPercentual: fcpPct,
       fundamentoST: regra.fundamento,
@@ -1973,7 +2039,7 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
       base_st: rST.bc_st_reduzida,
       base_st_original: rST.bc_st_original,
       mva_utilizada: mvaAjustada,
-      aliq_interna: ALIQ_INTERNA_BA,
+      aliq_interna: aliqInternaDestino,
       valor_icms_st: rST.icms_st,
       valor_icms_total: vICMSProprio + rST.icms_st + rST.fcp_st,
       valor_fcp: 0,
@@ -1984,9 +2050,9 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
       etapas_calculo: rST.etapas,
       memoria_calculo: rST.memoria,
       beneficio_5291: b5291 || null,
-      economia: b5291 ? Math.max(0, (rST.bc_st_original - rST.bc_st_reduzida) * (ALIQ_INTERNA_BA/100)) : 0,
+      economia: b5291 ? Math.max(0, (rST.bc_st_original - rST.bc_st_reduzida) * (aliqInternaDestino/100)) : 0,
       icms_nf_original: produto.valor_icms || 0,
-      obs: `MVA ajustada ${mvaAjustada}% (base: alíq. destacada NF-e ${aliqDestacada}%, interna BA ${ALIQ_INTERNA_BA}%)` +
+      obs: `MVA ajustada ${mvaAjustada}% (base: alíq. destacada NF-e ${aliqDestacada}%, interna ${ufDestino} ${aliqInternaDestino}%)` +
            (b5291 ? ` · Conv. 52/91 (${b5291.tipo}) carga ${b5291.carga_efetiva.toFixed(2)}% → redução ${(rST.percentual_reducao*100).toFixed(2)}%` : "") +
            (fcpPct > 0 ? ` · FCP-ST ${fcpPct}%` : ""),
     });
@@ -2015,18 +2081,18 @@ function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
 // Não integram a base: IPI, PIS, COFINS.
 // ============================================================
 function calcularBaseICMS(valorProduto, frete = 0, seguro = 0, outrasDespesas = 0, desconto = 0) {
-  const base = (valorProduto || 0) + (frete || 0) + (seguro || 0) + (outrasDespesas || 0) - (desconto || 0);
+  const base = numeroSeguro(valorProduto) + numeroSeguro(frete) + numeroSeguro(seguro) + numeroSeguro(outrasDespesas) - numeroSeguro(desconto);
   return Math.max(0, base);
 }
 
 /** Extrai os componentes corretos da base de cálculo ICMS de um item da NF-e. */
 function extrairComponentesBaseICMS(produto) {
   return {
-    valorProduto: produto.valor_total || 0,
-    frete: produto.valor_frete || 0,
-    seguro: produto.valor_seguro || 0,
-    outrasDespesas: produto.outrasDespesas || produto.valor_outras_desp || 0,
-    desconto: produto.valor_desconto || 0,
+    valorProduto: numeroSeguro(produto.valor_total),
+    frete: numeroSeguro(produto.valor_frete),
+    seguro: numeroSeguro(produto.valor_seguro),
+    outrasDespesas: numeroSeguro(produto.outrasDespesas ?? produto.valor_outras_desp),
+    desconto: numeroSeguro(produto.valor_desconto),
     // IPI propositalmente não incluído (já destacado na NF-e)
   };
 }
@@ -2055,7 +2121,7 @@ function calcularST(vProd, aliqInterna, mvaPercent, aliqInterestadual, frete=0, 
 // EXPORTAR CSV
 // ============================================================
 function exportarCSV(nota, produtos, calculos = []) {
-  const header = ["Seq","Código","Descrição","NCM","CEST","CFOP","Qtd","Valor Total","CST","Tributação","Fundamento Legal","Benefício","Status_Calculo","Motivo_Congelamento","Origem_Calculo","Versao_Apuracao_NCM","Tipo_Calculo","PMC_Encontrado","Valor_PMC","Fundamento_Pauta"];
+  const header = ["Seq","Código","Descrição","NCM","CEST","CFOP","Qtd","Valor Total","CST","Tributação","Fundamento Legal","Benefício","Status_Calculo","Motivo_Congelamento","Origem_Calculo","Versao_Apuracao_NCM","Tipo_Calculo","PMC_Encontrado","Valor_PMC","Fundamento_Pauta","ICMS_ST","Antecipacao_Bruta",`Antecipacao_Com_Reducao_${REDUCAO_ANTECIPACAO_PCT}pct`,"DIFAL"];
   const rows = produtos.map((p,i) => {
     const r = p.analise.filter(a=>a.tipo!=="NAO_ENCONTRADO");
     const tipos = [...new Set(p.analise.map(a=>a.tipo))].join(" | ");
@@ -2074,7 +2140,11 @@ function exportarCSV(nota, produtos, calculos = []) {
     return [p.seq,p.codigo,`"${p.descricao}"`,p.ncm,p.cest||"",p.cfop||"",p.quantidade,p.valor_total.toFixed(2),p.cst||"",tipos,`"${funds}"`,ben,
       congelado?"CONGELADO":"AUTOMATICO",`"${motivo}"`,origem,c.memoria_apuracao?.versao_apuracao||"",
       tipoCalculo, pmcDesc.temPMC?"SIM":"NÃO", pmcDesc.valorPMC ? pmcDesc.valorPMC.toFixed(2) : "",
-      `"${porPauta ? (c.fundamento_pauta||c.fundamento||"") : ""}"`].join(",");
+      `"${porPauta ? (c.fundamento_pauta||c.fundamento||"") : ""}"`,
+      numeroSeguro(c.valor_icms_st).toFixed(2),
+      (c.tributacao==="ANTECIPACAO"?numeroSeguro(c.valor_icms_st):0).toFixed(2),
+      (c.tributacao==="ANTECIPACAO"?arredondarCentavos(numeroSeguro(c.valor_icms_st)*(1-REDUCAO_ANTECIPACAO_PCT/100)):0).toFixed(2),
+      numeroSeguro(c.valor_difal).toFixed(2)].join(",");
   });
   const nf = nota ? `NF ${nota.numero} – ${nota.emitente_nome}` : "Análise Fiscal";
   const csvContent = `FiscoAI – ${nf}\n\n`+header.join(",")+"\n"+rows.join("\n");
@@ -2104,7 +2174,9 @@ function exportarRelatorioPDF(nota, produtos, calculos) {
   const totalICMSNF = calculos.reduce((s,c)=>s+(c.valor_icms_proprio||0),0);
   const totalICMSCalc = calculos.reduce((s,c)=>s+(c.valor_icms_total||0),0);
   const totalICMSST = calculos.reduce((s,c)=>s+(c.tributacao==="ICMS_ST" ? (c.valor_icms_st||0) : 0),0);
-  const totalAntecipacao = calculos.reduce((s,c)=>s+(c.tributacao==="ANTECIPACAO" ? (c.valor_icms_st||0) : 0),0);
+  const antecipacao = totaisAntecipacao(calculos);
+  const totalAntecipacao = antecipacao.bruto;
+  const totalAntecipacaoComReducao = antecipacao.comReducao;
   const totalDIFAL = calculos.reduce((s,c)=>s+(c.valor_difal||0),0);
   const totalFCP = calculos.reduce((s,c)=>s+((c.valor_fcp||0)+(c.valor_fcp_st||0)),0);
   const totalBeneficios = calculos.reduce((s,c)=>s+(c.economia||0),0);
@@ -2385,6 +2457,7 @@ function exportarRelatorioPDF(nota, produtos, calculos) {
   .tag-ok { color:#276749; font-weight:700; }
   .tag-warn { color:#9b2c2c; font-weight:700; }
   .avisos { background:#fffaf0; border-top:1px solid #fbd38d; padding:5px 8px; font-size:8.5px; color:#7b341e; }
+  .info-complementar { white-space:pre-wrap; background:#f8fafc; border:1px solid #e2e8f0; border-radius:4px; padding:7px; font-size:9px; line-height:1.45; }
   @media print { .no-print { display:none !important; } }
 </style></head>
 <body>
@@ -2419,10 +2492,14 @@ function exportarRelatorioPDF(nota, produtos, calculos) {
   <div class="cell"><div class="lbl">Total ICMS</div><div class="val">${fmt(totalICMSCalc)}</div></div>
   <div class="cell"><div class="lbl">Total ST</div><div class="val">${fmt(totalICMSST)}</div></div>
   <div class="cell"><div class="lbl">Total DIFAL</div><div class="val">${fmt(totalDIFAL)}</div></div>
-  <div class="cell"><div class="lbl">Total Antecipação</div><div class="val">${fmt(totalAntecipacao)}</div></div>
+  <div class="cell"><div class="lbl">Total Antecipação bruta</div><div class="val">${fmt(totalAntecipacao)}</div></div>
+  <div class="cell"><div class="lbl">Total Antecipação c/ redução (${REDUCAO_ANTECIPACAO_PCT}%)</div><div class="val">${fmt(totalAntecipacaoComReducao)}</div></div>
   <div class="cell"><div class="lbl">Total FCP</div><div class="val">${fmt(totalFCP)}</div></div>
   <div class="cell"><div class="lbl">Total Benefícios</div><div class="val">${fmt(totalBeneficios)}</div></div>
 </div>
+
+<h2>Informações complementares</h2>
+<div class="info-complementar">${esc([nota?.info_complementar, nota?.info_adicional_fisco].filter(Boolean).join("\n\n") || "Sem informações complementares")}</div>
 
 <!-- RESUMO EXECUTIVO -->
 <h2>📊 Resumo Executivo</h2>
@@ -3178,9 +3255,16 @@ function FCPPopover({seq, inicialAtivo, inicialPct, onConfirmar, onFechar}) {
   );
 }
 
-function CalcCard({produto, calculo, fcpConfig, onToggleFCP, popoverAberto, onAbrirPopover, onFecharPopover}) {
+function CalcCard({produto, calculo, fcpConfig, onToggleFCP, popoverAberto, onAbrirPopover, onFecharPopover, override, onAtualizarOverride, onRestaurarOverride}) {
   const fmt = (v) => "R$ " + parseFloat(v||0).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2});
   const fmtPct = (v) => parseFloat(v||0).toFixed(2).replace(".",",") + "%";
+  const [editandoValores, setEditandoValores] = useState(false);
+  const [rascunhos, setRascunhos] = useState({});
+  const camposEditaveis = [
+    ["valor_total", "Valor do produto"], ["valor_frete", "Frete"], ["valor_seguro", "Seguro"],
+    ["valor_outras_desp", "Outras despesas"], ["valor_desconto", "Desconto"], ["aliquota_icms", "Alíquota ICMS (%)"],
+    ["fcp_percentual", "FCP (%)"],
+  ];
 
   const borderColor = {
     ISENCAO: `rgba(${C.green},0.4)`,
@@ -3210,6 +3294,7 @@ function CalcCard({produto, calculo, fcpConfig, onToggleFCP, popoverAberto, onAb
           <div style={{fontSize:11,color:C.muted,marginTop:2}}>NCM: <span style={{fontFamily:"monospace",color:`rgb(${C.blue})`}}>{produto.ncm}</span> · CFOP: {produto.cfop||"—"} · Qtd: {produto.quantidade} {produto.unidade}</div>
         </div>
         <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+          <button onClick={()=>setEditandoValores(v=>!v)} style={{...S.btn("ghost"),fontSize:11,padding:"4px 9px"}}>✏️ Editar valores</button>
           <button
             onClick={()=>onAbrirPopover && onAbrirPopover(produto.seq)}
             title={fcpAtivo?`FCP ${fcpPct}% aplicado — clique para alterar/remover`:"Aplicar Fundo de Combate à Pobreza (FCP)"}
@@ -3235,6 +3320,17 @@ function CalcCard({produto, calculo, fcpConfig, onToggleFCP, popoverAberto, onAb
           onFechar={onFecharPopover}
         />
       )}
+
+      {editandoValores && <div style={{marginBottom:10,padding:10,borderRadius:8,border:`1px solid rgba(${C.yellow},0.45)`,background:`rgba(${C.yellow},0.08)`}}>
+        <div style={{fontSize:11,fontWeight:700,color:`rgb(${C.yellow})`,marginBottom:8}}>Simulação temporária — não altera o XML, Arquivo Fiscal, Histórico ou Memória Protegida.</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(135px,1fr))",gap:7}}>{camposEditaveis.map(([campo,rotulo])=>{
+          const original = Object.prototype.hasOwnProperty.call(override||{},campo) ? override[campo] : produto[campo];
+          const valor = Object.prototype.hasOwnProperty.call(rascunhos,campo) ? rascunhos[campo] : original;
+          return <label key={campo} style={{fontSize:10,color:C.muted}}>{rotulo}<input style={{...S.inp,marginTop:3,padding:"5px 7px",fontSize:11}} type="number" step="0.01" value={valor??""} onChange={e=>{const n=Number(e.target.value);if(e.target.value===""||Number.isFinite(n)){setRascunhos(atual=>({...atual,[campo]:e.target.value}));onAtualizarOverride?.(campo,e.target.value===""?0:n);}}}/></label>;
+        })}</div>
+        <label style={{display:"flex",gap:6,alignItems:"center",marginTop:8,fontSize:11,color:C.sub}}><input type="checkbox" checked={!!override?.remover_reducoes} onChange={e=>onAtualizarOverride?.("remover_reducoes",e.target.checked)}/> Remover reduções de base nesta simulação</label>
+        <button style={{...S.btn("ghost"),marginTop:8,fontSize:11,padding:"4px 9px"}} onClick={()=>{setRascunhos({});onRestaurarOverride?.();}}>Restaurar valores do XML</button>
+      </div>}
 
       {/* Estado do cálculo: CONGELADO (manual) × AUTOMÁTICO */}
       {calculo._congelado?(
@@ -3375,7 +3471,7 @@ function CalcCard({produto, calculo, fcpConfig, onToggleFCP, popoverAberto, onAb
               ["ICMS Próprio", fmt(calculo.valor_icms_proprio), C.yellow],
               ["MVA Ajustada", calculo.mva_utilizada ? fmtPct(calculo.mva_utilizada) : "—", C.yellow],
               ["BC Substituição", fmt(calculo.base_st), C.blue],
-              ["Alíq. Interna BA", fmtPct(calculo.aliq_interna||ALIQ_INTERNA_BA), C.blue],
+              ["Alíq. Interna Destino", fmtPct(calculo.aliq_interna||ALIQ_INTERNA_BA), C.blue],
               ["ICMS-ST", fmt(calculo.valor_icms_st), C.green],
               ["ICMS Total", fmt(calculo.valor_icms_total), C.green],
             ].map(([l,v,col])=>(
@@ -3475,6 +3571,8 @@ export default function App(){
   const[nota,setNota]=useState(null);
   const[produtos,setProdutos]=useState([]);
   const[calculos,setCalculos]=useState([]);
+  const[overrides,setOverrides]=useState({});
+  const overridesTimersRef=useRef({});
   // Contingência para XMLs sem UF; na operação normal os dados vêm do XML.
   const[ufOrigem]=useState("SP");
   const[ufDestino]=useState("BA");
@@ -3541,6 +3639,40 @@ export default function App(){
     const prCom = { ...pr, fcp_percentual: fcpPct, calculo_congelado: undefined };
     return aplicarFCP(calcularICMSProduto(prCom, orig, dest, modo), fcpPct);
   }, []);
+
+  const calculosVisiveis = useMemo(() => {
+    if (!Object.keys(overrides).length) return calculos;
+    const orig = nota?.uf_origem || ufOrigem;
+    const dest = nota?.uf_destino || ufDestino;
+    return produtos.map((produto) => {
+      const override = overrides[`${nota?.chave || "sem-nota"}:${produto.seq}`];
+      if (!override) return calculos[produtos.indexOf(produto)] || {};
+      const produtoEditado = aplicarOverrides(produto, override);
+      if (Object.prototype.hasOwnProperty.call(override, "remover_reducoes")) {
+        produtoEditado.decisao_manual = {
+          ...(produto.decisao_manual || { modo: "AUTO" }),
+          remover_reducoes: !!override.remover_reducoes,
+        };
+      }
+      const fcp = numeroSeguro(produtoEditado.fcp_percentual || fcpPorProduto?.[produto.seq]?.percentual);
+      return aplicarFCP(
+        calcularICMSProduto({ ...produtoEditado, __simulacao: true, calculo_congelado: undefined }, orig, dest, modoCalculo),
+        fcp,
+      );
+    });
+  }, [calculos, fcpPorProduto, modoCalculo, nota, overrides, produtos, ufOrigem, ufDestino]);
+
+  const atualizarOverride = useCallback((seq, campo, valor) => {
+    const chave = `${nota?.chave || "sem-nota"}:${seq}`;
+    clearTimeout(overridesTimersRef.current[chave]);
+    overridesTimersRef.current[chave] = setTimeout(() => {
+      setOverrides(atual => ({ ...atual, [chave]: { ...(atual[chave] || {}), [campo]: valor } }));
+    }, 300);
+  }, [nota]);
+  const restaurarOverride = useCallback((seq) => {
+    const chave = `${nota?.chave || "sem-nota"}:${seq}`;
+    setOverrides(atual => { const proximo = { ...atual }; delete proximo[chave]; return proximo; });
+  }, [nota]);
 
   // Aplica/altera FCP num único produto e recalcula APENAS aquele item.
   // A alteração de FCP é uma intervenção manual → congela o cálculo.
@@ -3743,6 +3875,7 @@ export default function App(){
 
   const analisar=useCallback((xmlStr,ufO,ufD)=>{
     const xml=xmlStr||xmlInput;
+    setOverrides({});
     if(!xml.trim()){setErro("Cole ou carregue o XML da NF-e antes de analisar.");return;}
     const{nota:n,produtos:p,erro:e}=parsearNFe(xml);
     if(e){setErro(e);return;}
@@ -3799,13 +3932,14 @@ export default function App(){
   useEffect(()=>{ setHistApuracoes(HistoricoApuracaoService.listar()); },[]);
 
   const carregarDoHistorico=(entry)=>{
+    setOverrides({});
     setNota(entry.nota); setProdutos(entry.produtos); setCalculos(entry.calculos||[]); setXmlInput(entry.xml);
     setAnalisado(true); setHistSel(entry.id); setTab("calculo"); setStDecisoes({});
   };
 
   const limparHistorico=(id)=>setHistorico(h=>h.filter(e=>e.id!==id));
 
-  const reset=()=>{setXmlInput("");setNota(null);setProdutos([]);setCalculos([]);setErro(null);setAnalisado(false);setTab("importar");setBusca("");setExpandido(null);setStDecisoes({});};
+  const reset=()=>{setXmlInput("");setNota(null);setProdutos([]);setCalculos([]);setOverrides({});setErro(null);setAnalisado(false);setTab("importar");setBusca("");setExpandido(null);setStDecisoes({});};
 
 
   const stats=useMemo(()=>{
@@ -3814,16 +3948,16 @@ export default function App(){
     const comST=produtos.filter(p=>p.analise.some(a=>a.tipo==="ICMS_ST")).length;
     const comBeneficio=produtos.filter(p=>p.analise.some(a=>a.tipo==="REDUCAO_BC")).length;
     const semRegra=produtos.filter(p=>p.analise.every(a=>a.tipo==="NAO_ENCONTRADO")).length;
-    const totalICMSNF=calculos.reduce((s,c)=>s+(c.valor_icms_proprio||0),0);
-    const totalICMSCalc=calculos.reduce((s,c)=>s+(c.valor_icms_total||0),0);
-    const totalICMSST=calculos.reduce((s,c)=>s+(c.tributacao==="ICMS_ST"?(c.valor_icms_st||0):0),0);
-    const totalAntecipacao=calculos.reduce((s,c)=>s+(c.tributacao==="ANTECIPACAO"?(c.valor_icms_st||0):0),0);
-    const totalDIFAL=calculos.reduce((s,c)=>s+(c.valor_difal||0),0);
-    const totalEconomia=calculos.reduce((s,c)=>s+(c.economia||0),0);
-    const totalFCP=calculos.reduce((s,c)=>s+(c.valor_fcp||0)+(c.valor_fcp_st||0),0);
-    const temPresuncaoICMSNF=calculos.some(c=>c.icms_foi_presumido||c.icms_proprio_presumido);
-    return{total,isentos,comST,comBeneficio,semRegra,totalICMSNF,totalICMSCalc,totalICMSST,totalAntecipacao,totalDIFAL,totalEconomia,totalFCP,temPresuncaoICMSNF};
-  },[produtos,calculos]);
+    const totalICMSNF=calculosVisiveis.reduce((s,c)=>s+(c.valor_icms_proprio||0),0);
+    const totalICMSCalc=calculosVisiveis.reduce((s,c)=>s+(c.valor_icms_total||0),0);
+    const totalICMSST=calculosVisiveis.reduce((s,c)=>s+(c.tributacao==="ICMS_ST"?(c.valor_icms_st||0):0),0);
+    const antecipacao=totaisAntecipacao(calculosVisiveis);
+    const totalDIFAL=calculosVisiveis.reduce((s,c)=>s+(c.valor_difal||0),0);
+    const totalEconomia=calculosVisiveis.reduce((s,c)=>s+(c.economia||0),0);
+    const totalFCP=calculosVisiveis.reduce((s,c)=>s+(c.valor_fcp||0)+(c.valor_fcp_st||0),0);
+    const temPresuncaoICMSNF=calculosVisiveis.some(c=>c.icms_foi_presumido||c.icms_proprio_presumido);
+    return{total,isentos,comST,comBeneficio,semRegra,totalICMSNF,totalICMSCalc,totalICMSST,totalAntecipacao:antecipacao.bruto,totalAntecipacaoComReducao:antecipacao.comReducao,totalDIFAL,totalEconomia,totalFCP,temPresuncaoICMSNF};
+  },[produtos,calculosVisiveis]);
 
   const prodsFiltrados=useMemo(()=>produtos.filter(p=>{
     const mb=!busca||p.descricao.toLowerCase().includes(busca.toLowerCase())||p.ncm.includes(busca)||p.cest.includes(busca);
@@ -3864,9 +3998,9 @@ export default function App(){
         </div>
         <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",justifyContent:"flex-end"}}>
           {analisado&&<span style={{...S.badge,background:`rgba(${C.green},0.12)`,color:`rgb(${C.green})`,borderColor:`rgba(${C.green},0.3)`}}>{produtos.length} produtos</span>}
-          {analisado&&<button style={S.btn("pdf")} onClick={()=>exportarRelatorioPDF(nota,produtos,calculos)}>📄 PDF</button>}
+          {analisado&&<button style={S.btn("pdf")} onClick={()=>exportarRelatorioPDF(nota,produtos,calculosVisiveis)}>📄 PDF</button>}
           {analisado&&<button style={S.btn("primary")} onClick={salvarNoArquivo}>💾 Salvar</button>}
-          {analisado&&<button style={S.btn("success")} onClick={()=>exportarCSV(nota,produtos,calculos)}>⬇️ CSV</button>}
+          {analisado&&<button style={S.btn("success")} onClick={()=>exportarCSV(nota,produtos,calculosVisiveis)}>⬇️ CSV</button>}
           {analisado&&<button style={S.btn("ghost")} onClick={reset}>🔄 Nova</button>}
         </div>
       </header>
@@ -4149,7 +4283,8 @@ export default function App(){
               <Stat label="ICMS na NF"          value={fmt(stats.totalICMSNF) + (stats.temPresuncaoICMSNF ? " (presum.)" : "")}                           col={C.gray}  sub="original"/>
               <Stat label="ICMS Calculado"      value={fmt(stats.totalICMSCalc)}                                                                       col={C.green} sub="após regras"/>
               <Stat label="ICMS-ST a Recolher"  value={fmt(stats.totalICMSST)}                                                                         col={C.blue}  sub="RICMS/BA"/>
-              <Stat label="ICMS Antecipação"    value={fmt(stats.totalAntecipacao)}                                                                    col={C.yellow} sub="parcial BA"/>
+              <Stat label="ICMS Antecipação bruta" value={fmt(stats.totalAntecipacao)}                                                                col={C.yellow} sub="parcial BA"/>
+              <Stat label={`ICMS Antecipação c/ redução (${REDUCAO_ANTECIPACAO_PCT}%)`} value={fmt(stats.totalAntecipacaoComReducao)}                 col={C.yellow} sub="total reduzido"/>
               <Stat label="DIFAL a Recolher"    value={fmt(stats.totalDIFAL)}                                                                          col={C.blue}  sub="EC 87/15"/>
               <Stat label="FCP a Recolher"      value={fmt(stats.totalFCP)}                                                                            col={C.yellow} sub="Fundo Combate Pobreza"/>
               <Stat label="Economia Fiscal"     value={fmt(stats.totalEconomia)}                                                                       col={C.green} sub="benefícios"/>
@@ -4162,10 +4297,10 @@ export default function App(){
 
             {/* Botão exportar PDF */}
             <div style={{display:"flex",justifyContent:"flex-end",marginBottom:16,gap:8}}>
-              <button style={S.btn("pdf")} onClick={()=>exportarRelatorioPDF(nota,produtos,calculos)}>
+              <button style={S.btn("pdf")} onClick={()=>exportarRelatorioPDF(nota,produtos,calculosVisiveis)}>
                 📄 Exportar Relatório PDF
               </button>
-              <button style={S.btn("success")} onClick={()=>exportarCSV(nota,produtos,calculos)}>
+              <button style={S.btn("success")} onClick={()=>exportarCSV(nota,produtos,calculosVisiveis)}>
                 ⬇️ Exportar CSV
               </button>
             </div>
@@ -4242,7 +4377,7 @@ export default function App(){
                   <div style={S.cardTitle}>🛠️ Recalcular {selCalc.size} produto(s)</div>
                   <div style={{fontSize:11,color:C.muted,marginBottom:10}}>Escolha o modo de cálculo. A alteração será salva automaticamente no Arquivo Fiscal.</div>
                   <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}}>
-                    {[["ICMS_ST","ICMS-ST"],["ANTECIPACAO","Antecipação Parcial"],["DIFAL","DIFAL"],["ISENTO","Isento (cesta básica)"],["NAO_TRIBUTADO","Não Tributado (cesta básica)"]].map(([k,l])=>(
+                    {[["ICMS_ST","ICMS-ST"],["ANTECIPACAO","Antecipação Parcial"],["DIFAL","DIFAL"],["CONVENIO_52_91","Redução Conv. 52/91"],["ISENTO","Isento"],["NAO_TRIBUTADO","Não Tributado"]].map(([k,l])=>(
                       <button key={k} style={{...S.btn(modalRecalc.modo===k?"primary":"ghost"),fontSize:11,padding:"6px 12px"}} onClick={()=>setModalRecalc({...modalRecalc,modo:k})}>{l}</button>
                     ))}
                   </div>
@@ -4254,8 +4389,26 @@ export default function App(){
                         <input type="checkbox" checked={modalRecalc.mvaAj} onChange={e=>setModalRecalc({...modalRecalc,mvaAj:e.target.checked})}/>
                         A MVA informada já está ajustada
                       </label>
+                      <label style={{display:"flex",gap:6,alignItems:"center",marginTop:8,fontSize:11,color:C.muted}}>
+                        <input type="checkbox" checked={!!modalRecalc.aplicarReducao5291} onChange={e=>setModalRecalc({...modalRecalc,aplicarReducao5291:e.target.checked,removerReducoes:e.target.checked?false:modalRecalc.removerReducoes})}/>
+                        Aplicar redução do Convênio 52/91 aos NCMs elegíveis
+                      </label>
                     </div>
                   )}
+                  {modalRecalc.modo==="CONVENIO_52_91"&&(
+                    <div style={{fontSize:11,color:C.muted,marginBottom:12}}>
+                      Aplica a carga efetiva do Anexo I ou II conforme NCM, descrição e UFs da nota. Itens sem NCM enquadrado permanecem inalterados.
+                      <select style={{...S.inp,marginTop:8}} value={modalRecalc.anexoConvenio||""} onChange={e=>setModalRecalc({...modalRecalc,anexoConvenio:e.target.value||null})}>
+                        <option value="">Anexo automático (pela descrição)</option>
+                        <option value="I">Anexo I — industrial</option>
+                        <option value="II">Anexo II — agrícola</option>
+                      </select>
+                    </div>
+                  )}
+                  <label style={{display:"flex",gap:8,alignItems:"center",marginBottom:12,fontSize:11,cursor:"pointer"}}>
+                    <input type="checkbox" disabled={modalRecalc.modo==="CONVENIO_52_91"||modalRecalc.aplicarReducao5291} checked={!!modalRecalc.removerReducoes&&modalRecalc.modo!=="CONVENIO_52_91"} onChange={e=>setModalRecalc({...modalRecalc,removerReducoes:e.target.checked})}/>
+                    <span>Remover reduções de base e calcular sobre a base integral</span>
+                  </label>
                   {/* === FCP em Lote === */}
                   <div style={{marginBottom:12,borderTop:`1px solid ${C.border}`,paddingTop:12}}>
                     <div style={{fontSize:11,fontWeight:"bold",marginBottom:8,display:"flex",alignItems:"center",gap:6}}>🛡️ Fundo de Combate à Pobreza (FCP)</div>
@@ -4278,8 +4431,9 @@ export default function App(){
                         if(isNaN(m)||m<0||m>1000){alert("Informe uma MVA válida (0-1000%).");return;}
                       }
                       const seqs=new Set(selCalc);
+                      if(modalRecalc.modo==="CONVENIO_52_91"&&!produtos.some(p=>seqs.has(p.seq)&&identificarConv5291(p.ncm,p.descricao,modalRecalc.anexoConvenio))){alert("Nenhum NCM selecionado consta do Anexo escolhido do Convênio 52/91.");return;}
                       const orig=nota?.uf_origem||ufOrigem, dest=nota?.uf_destino||ufDestino;
-                      const base={modo:modalRecalc.modo,mva_informada:modalRecalc.modo==="ICMS_ST"?parseFloat(modalRecalc.mva):null,mva_ja_ajustada:!!modalRecalc.mvaAj,forcar_st:true,alterado_em:new Date().toISOString()};
+                      const base={modo:modalRecalc.modo,mva_informada:modalRecalc.modo==="ICMS_ST"?parseFloat(modalRecalc.mva):null,mva_ja_ajustada:!!modalRecalc.mvaAj,remover_reducoes:modalRecalc.modo==="CONVENIO_52_91"?false:!!modalRecalc.removerReducoes,aplicar_reducao_5291:!!modalRecalc.aplicarReducao5291,anexo_convenio_5291:modalRecalc.anexoConvenio||null,forcar_st:true,alterado_em:new Date().toISOString()};
                       const notaOrigem=nota?{numero:nota.numero,chave_acesso:nota.chave,data:nota.data_emissao,uf_origem:orig,uf_destino:dest}:null;
                       const fcpAplicados={};
                       const rodar=(dmAtual)=>{
@@ -4287,6 +4441,11 @@ export default function App(){
                         const calcs=[];
                         produtos.forEach(p=>{
                           if(!seqs.has(p.seq)){
+                            novos.push(p);
+                            calcs.push(calcularProdComFCP(p,orig,dest,p.decisao_manual?.modo==="DIFAL"?"DIFAL":modoCalculo));
+                            return;
+                          }
+                          if(dmAtual.modo==="CONVENIO_52_91"&&!identificarConv5291(p.ncm,p.descricao,dmAtual.anexo_convenio_5291)){
                             novos.push(p);
                             calcs.push(calcularProdComFCP(p,orig,dest,p.decisao_manual?.modo==="DIFAL"?"DIFAL":modoCalculo));
                             return;
@@ -4357,11 +4516,11 @@ export default function App(){
                     🛠️ Cálculo manual: {p.decisao_manual.modo}
                   </div>
                 )}
-                {(calculos[i]?.alertas||[]).some(a=>a?.tipo==="CALC_MANUAL_BLOQUEADO")&&(()=>{
-                  const al=(calculos[i].alertas||[]).find(a=>a?.tipo==="CALC_MANUAL_BLOQUEADO");
+                {(calculosVisiveis[i]?.alertas||[]).some(a=>a?.tipo==="CALC_MANUAL_BLOQUEADO")&&(()=>{
+                  const al=(calculosVisiveis[i].alertas||[]).find(a=>a?.tipo==="CALC_MANUAL_BLOQUEADO");
                   return (
                     <div style={{marginTop:8,marginBottom:-12,padding:"10px 12px",borderRadius:12,background:`rgba(${C.red},0.14)`,border:`1px solid rgba(${C.red},0.4)`,color:"#ffd9d9",fontSize:11.5,fontWeight:600,lineHeight:1.5}}>
-                      ⚠️ Recálculo manual como ICMS-ST não aplicado — CST {al.cst||calculos[i]?.permissoes_cst?.codigo||"—"} impede esse cálculo ({al.motivo||al.mensagem}). O valor exibido é o automático.
+                      ⚠️ Recálculo manual como ICMS-ST não aplicado — CST {al.cst||calculosVisiveis[i]?.permissoes_cst?.codigo||"—"} impede esse cálculo ({al.motivo||al.mensagem}). O valor exibido é o automático.
                       {al.fundamento&&<div style={{fontWeight:400,color:C.sub,marginTop:4}}>Fundamento: {al.fundamento}</div>}
                     </div>
                   );
@@ -4369,15 +4528,23 @@ export default function App(){
 
                 <CalcCard
                   produto={p}
-                  calculo={calculos[i]||{}}
+                  calculo={calculosVisiveis[i]||{}}
                   fcpConfig={fcpPorProduto[p.seq]}
                   popoverAberto={fcpPopover===p.seq}
                   onAbrirPopover={(seq)=>setFcpPopover(seq)}
                   onFecharPopover={()=>setFcpPopover(null)}
                   onToggleFCP={aplicarFCPProduto}
+                  override={overrides[`${nota?.chave || "sem-nota"}:${p.seq}`]}
+                  onAtualizarOverride={(campo,valor)=>atualizarOverride(p.seq,campo,valor)}
+                  onRestaurarOverride={()=>restaurarOverride(p.seq)}
                 />
               </div>
             ))}
+
+            <details style={{...S.card,marginTop:12}}>
+              <summary style={{cursor:"pointer",fontWeight:700,color:C.text}}>Informações complementares</summary>
+              <div style={{marginTop:10,whiteSpace:"pre-wrap",fontSize:12,lineHeight:1.5,color:C.sub}}>{[nota?.info_complementar,nota?.info_adicional_fisco].filter(Boolean).join("\n\n")||"Sem informações complementares"}</div>
+            </details>
 
 
             {/* Totais consolidados */}
@@ -4387,14 +4554,14 @@ export default function App(){
                 <table style={S.table}>
                   <thead>
                     <tr>
-                      {["#","Produto","NCM","Valor Prod.","Tributação","Base ICMS","Alíq.","ICMS Próprio","ICMS-ST","Antecipação","ICMS Total","Economia"].map(h=>(
+                      {["#","Produto","NCM","Valor Prod.","Tributação","Base ICMS","Alíq.","ICMS Próprio","ICMS-ST","Antec. bruta",`Antec. c/ redução (${REDUCAO_ANTECIPACAO_PCT}%)`,"ICMS Total","Economia"].map(h=>(
                         <th key={h} style={S.th}>{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
                     {produtos.map((p,i)=>{
-                      const c=calculos[i]||{};
+                      const c=calculosVisiveis[i]||{};
                       return(
                         <tr key={p.seq} style={{cursor:"pointer"}} onClick={()=>setTab("analise")}>
                           <td style={{...S.td,color:C.muted,fontWeight:700}}>{p.seq}</td>
@@ -4406,7 +4573,8 @@ export default function App(){
                           <td style={{...S.td,color:C.muted,whiteSpace:"nowrap"}}>{c.aliquota_aplicada ? `${parseFloat(c.aliquota_aplicada).toFixed(2).replace(".",",")}%` : "—"}</td>
                           <td style={{...S.td,color:C.sub,whiteSpace:"nowrap"}}>{fmt(c.valor_icms_proprio)}</td>
                           <td style={{...S.td,color:`rgb(${C.blue})`,fontWeight:700,whiteSpace:"nowrap"}}>{c.tributacao==="ICMS_ST"&&c.valor_icms_st>0?fmt(c.valor_icms_st):"—"}</td>
-                          <td style={{...S.td,color:`rgb(${C.yellow})`,fontWeight:700,whiteSpace:"nowrap"}}>{c.tributacao==="ANTECIPACAO"&&c.valor_icms_st>0?fmt(c.valor_icms_st):"—"}</td>
+                          <td style={{...S.td,color:`rgb(${C.yellow})`,fontWeight:700,whiteSpace:"nowrap"}}>{c.tributacao==="ANTECIPACAO"?fmt(c.valor_icms_st):fmt(0)}</td>
+                          <td style={{...S.td,color:`rgb(${C.yellow})`,fontWeight:700,whiteSpace:"nowrap"}}>{c.tributacao==="ANTECIPACAO"?fmt(arredondarCentavos(numeroSeguro(c.valor_icms_st)*(1-REDUCAO_ANTECIPACAO_PCT/100))):fmt(0)}</td>
                           <td style={{...S.td,fontWeight:700,color:"#68d391",whiteSpace:"nowrap"}}>{fmt(c.valor_icms_total)}</td>
                           <td style={{...S.td,color:c.economia>0?`rgb(${C.green})`:C.muted,fontWeight:c.economia>0?700:400,whiteSpace:"nowrap"}}>{c.economia>0?fmt(c.economia):"—"}</td>
                         </tr>
@@ -4419,9 +4587,10 @@ export default function App(){
                       <td style={S.td}/>
                       <td style={S.td}/>
                       <td style={S.td}/>
-                      <td style={{...S.td,color:C.sub,whiteSpace:"nowrap"}}>{fmt(calculos.reduce((s,c)=>s+(c.valor_icms_proprio||0),0))}</td>
+                      <td style={{...S.td,color:C.sub,whiteSpace:"nowrap"}}>{fmt(calculosVisiveis.reduce((s,c)=>s+(c.valor_icms_proprio||0),0))}</td>
                       <td style={{...S.td,color:`rgb(${C.blue})`,whiteSpace:"nowrap"}}>{fmt(stats.totalICMSST)}</td>
                       <td style={{...S.td,color:`rgb(${C.yellow})`,whiteSpace:"nowrap"}}>{fmt(stats.totalAntecipacao)}</td>
+                      <td style={{...S.td,color:`rgb(${C.yellow})`,whiteSpace:"nowrap"}}>{fmt(stats.totalAntecipacaoComReducao)}</td>
                       <td style={{...S.td,color:"#68d391",whiteSpace:"nowrap"}}>{fmt(stats.totalICMSCalc)}</td>
                       <td style={{...S.td,color:`rgb(${C.green})`,whiteSpace:"nowrap"}}>{fmt(stats.totalEconomia)}</td>
                     </tr>
@@ -4601,10 +4770,11 @@ export default function App(){
             valorTotal:s.valorTotal+(r.valorTotal||0),
             icmsProprio:s.icmsProprio+(r.totais?.icmsProprio||0),
             icmsST:s.icmsST+(r.totais?.icmsST||0),
-            antecipacao:s.antecipacao+(r.totais?.antecipacao||0),
+            antecipacao:s.antecipacao+totaisAntecipacaoRegistro(r).bruto,
+            antecipacaoComReducao:s.antecipacaoComReducao+totaisAntecipacaoRegistro(r).comReducao,
             difal:s.difal+(r.totais?.difal||0),
             icmsCalcTotal:s.icmsCalcTotal+(r.totais?.icmsCalcTotal||0),
-          }),{valorTotal:0,icmsProprio:0,icmsST:0,antecipacao:0,difal:0,icmsCalcTotal:0});
+          }),{valorTotal:0,icmsProprio:0,icmsST:0,antecipacao:0,antecipacaoComReducao:0,difal:0,icmsCalcTotal:0});
           return(
             <div style={{display:"grid",gridTemplateColumns:"300px 1fr",gap:20,alignItems:"start"}}>
               <div style={S.card}>
@@ -4651,7 +4821,8 @@ export default function App(){
                             ["Valor Total",fmt(totaisMes.valorTotal)],
                             ["ICMS Próprio",fmt(totaisMes.icmsProprio)],
                             ["ICMS-ST",fmt(totaisMes.icmsST)],
-                            ["Antecipação",fmt(totaisMes.antecipacao)],
+                            ["Antecipação bruta",fmt(totaisMes.antecipacao)],
+                            [`Antecipação c/ redução (${REDUCAO_ANTECIPACAO_PCT}%)`,fmt(totaisMes.antecipacaoComReducao)],
                             ["DIFAL",fmt(totaisMes.difal)],
                             ["ICMS Calc. Total",fmt(totaisMes.icmsCalcTotal)],
                           ].map(([l,v])=>(
@@ -4663,7 +4834,7 @@ export default function App(){
                         </div>
                         <div style={{overflowX:"auto"}}>
                           <table style={S.table}>
-                            <thead><tr>{["NF","Série","Emissão","Emitente","UF","Valor","ICMS Próp.","ICMS-ST","Antecip.","DIFAL","Itens",""].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+                            <thead><tr>{["NF","Série","Emissão","Emitente","UF","Valor","ICMS Próp.","ICMS-ST","Antec. bruta","Antec. reduzida","DIFAL","Itens",""].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
                             <tbody>
                               {regsDoMes.map(r=>(
                                 <tr key={r.id}>
@@ -4675,7 +4846,8 @@ export default function App(){
                                   <td style={{...S.td,whiteSpace:"nowrap",fontWeight:700,color:"#68d391"}}>{fmt(r.valorTotal)}</td>
                                   <td style={{...S.td,whiteSpace:"nowrap"}}>{fmt(r.totais?.icmsProprio)}</td>
                                   <td style={{...S.td,whiteSpace:"nowrap",color:"#63b3ed"}}>{fmt(r.totais?.icmsST)}</td>
-                                  <td style={{...S.td,whiteSpace:"nowrap",color:"#f6ad55"}}>{fmt(r.totais?.antecipacao)}</td>
+                                  <td style={{...S.td,whiteSpace:"nowrap",color:"#f6ad55"}}>{fmt(totaisAntecipacaoRegistro(r).bruto)}</td>
+                                  <td style={{...S.td,whiteSpace:"nowrap",color:"#f6ad55"}}>{fmt(totaisAntecipacaoRegistro(r).comReducao)}</td>
                                   <td style={{...S.td,whiteSpace:"nowrap",color:"#b794f4"}}>{fmt(r.totais?.difal)}</td>
                                   <td style={{...S.td,textAlign:"center"}}>{r.produtos?.length||0}</td>
                                   <td style={S.td}><button style={{...S.btn("danger"),padding:"2px 7px",fontSize:11}} onClick={()=>{if(confirm(`Excluir NF-e ${r.numero}?`)){setArquivo(prev=>removerRegistroArquivo(prev,arqEmpresaSel,r.id));}}}>✕</button></td>

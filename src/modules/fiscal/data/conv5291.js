@@ -589,22 +589,40 @@ export const CONV_52_91_AGRICOLA = [
 
 const _norm = (n) => String(n || "").replace(/\D/g, "");
 
-// índice por NCM (8 dígitos) para lookup O(1)
+// Um item legal pode listar vários NCMs ou uma subposição (menos de 8 dígitos).
 const _IDX_IND = new Map();
 const _IDX_AGR = new Map();
-for (const r of CONV_52_91_INDUSTRIAL) _IDX_IND.set(_norm(r.ncm), r);
-for (const r of CONV_52_91_AGRICOLA)   _IDX_AGR.set(_norm(r.ncm), r);
+for (const r of CONV_52_91_INDUSTRIAL) for (const n of r.ncm.split("/")) {
+  const chave = _norm(n);
+  _IDX_IND.set(chave, [...(_IDX_IND.get(chave) || []), r]);
+}
+for (const r of CONV_52_91_AGRICOLA) for (const n of r.ncm.split("/")) {
+  const chave = _norm(n);
+  _IDX_AGR.set(chave, [...(_IDX_AGR.get(chave) || []), r]);
+}
 
 const _SUL_SUDESTE_EX_ES = ["SP","RJ","MG","RS","SC","PR"];
 const _NNE_CO_ES = ["AC","AL","AM","AP","BA","CE","DF","ES","GO","MA","MS","MT","PA","PB","PE","PI","RN","RO","RR","SE","TO"];
 
 /** Identifica se o NCM pertence ao Anexo I (INDUSTRIAL) ou II (AGRICOLA) do Conv. 52/91. */
-export function identificarConv5291(ncm) {
+export function identificarConv5291(ncm, descricao = "", anexoPreferido = null) {
   const n = _norm(ncm);
-  if (!n) return null;
-  if (_IDX_IND.has(n)) return { tipo: "INDUSTRIAL", anexo: "I",  regra: _IDX_IND.get(n) };
-  if (_IDX_AGR.has(n)) return { tipo: "AGRICOLA",   anexo: "II", regra: _IDX_AGR.get(n) };
-  return null;
+  if (n.length !== 8) return null;
+  const candidatos = [
+    ...[..._IDX_IND].filter(([chave]) => n.startsWith(chave)).flatMap(([, regras]) => regras.map(regra => ({ tipo: "INDUSTRIAL", anexo: "I", regra }))),
+    ...[..._IDX_AGR].filter(([chave]) => n.startsWith(chave)).flatMap(([, regras]) => regras.map(regra => ({ tipo: "AGRICOLA", anexo: "II", regra }))),
+  ];
+  if (!candidatos.length) return null;
+  const preferidos = anexoPreferido ? candidatos.filter(c => c.anexo === anexoPreferido) : candidatos;
+  if (!preferidos.length) return null;
+  if (preferidos.length === 1) return { ...preferidos[0], revisao_anexo: false };
+  const termos = String(descricao || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").match(/[a-z]{4,}/g) || [];
+  const pontos = (c) => {
+    const texto = c.regra.descricao.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    return termos.filter(t => texto.includes(t)).length;
+  };
+  const ordenados = [...preferidos].sort((a, b) => pontos(b) - pontos(a));
+  return { ...ordenados[0], revisao_anexo: !anexoPreferido && pontos(ordenados[0]) === pontos(ordenados[1]) };
 }
 
 /** Retorna a carga efetiva (%) prevista no Convênio 52/91 para a operação. */
@@ -631,8 +649,8 @@ export function cargaEfetivaConv5291(tipo, ufOrigem, ufDestino) {
  *   { aplica, tipo, anexo, ncm, descricao, carga_efetiva, aliquota_interna,
  *     perc_base_reduzida (fator 0..1), fundamento }
  */
-export function beneficio5291(ncm, ufOrigem, ufDestino, aliquotaInterna) {
-  const found = identificarConv5291(ncm);
+export function beneficio5291(ncm, ufOrigem, ufDestino, aliquotaInterna, descricao = "", anexoPreferido = null) {
+  const found = identificarConv5291(ncm, descricao, anexoPreferido);
   if (!found) return null;
   const aliq = Number(aliquotaInterna) || 0;
   if (aliq <= 0) return null;
@@ -641,12 +659,12 @@ export function beneficio5291(ncm, ufOrigem, ufDestino, aliquotaInterna) {
     aplica: true,
     tipo: found.tipo,
     anexo: found.anexo,
+    revisao_anexo: found.revisao_anexo,
     ncm: found.regra.ncm,
     descricao: found.regra.descricao,
     carga_efetiva: carga,
     aliquota_interna: aliq,
-    perc_base_reduzida: carga / aliq, // fator 0..1
+    perc_base_reduzida: Math.min(1, carga / aliq), // fator 0..1
     fundamento: found.regra.fundamento,
   };
 }
-
