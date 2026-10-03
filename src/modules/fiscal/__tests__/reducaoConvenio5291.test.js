@@ -13,6 +13,7 @@ describe("redução do Convênio 52/91 por NCM", () => {
       descCompativel: false,
     });
     expect(beneficio5291("82073000", "SP", "BA", 20.5, "FERR. PUNC.")?.carga_efetiva).toBe(5.14);
+    expect(beneficio5291("82073000", "SP", "BA", 20.5, "FERR. PUNC.", null, true)?.carga_efetiva).toBe(8.8);
   });
 
   it("reconhece o segundo NCM de um item agrícola com alternativas", () => {
@@ -23,6 +24,7 @@ describe("redução do Convênio 52/91 por NCM", () => {
         .enquadrado,
     ).toBe(true);
     expect(beneficio5291("87019200", "GO", "BA", 20.5, "Trator agrícola")?.carga_efetiva).toBe(7);
+    expect(beneficio5291("87019200", "GO", "BA", 20.5, "Trator agrícola", null, true)?.carga_efetiva).toBe(5.6);
     expect(beneficio5291("87019200", "BA", "BA", 20.5, "Trator agrícola")?.carga_efetiva).toBe(5.6);
   });
 

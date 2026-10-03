@@ -25,19 +25,20 @@ describe("redução por item no cálculo da nota", () => {
     );
     expect(calc.tributacao).toBe("ANTECIPACAO");
     expect(calc.beneficio_5291?.anexo).toBe("I");
-    expect(calc.base_st).toBeCloseTo(100 * (5.14 / 20.5), 4);
+    expect(calc.base_st).toBeCloseTo(100 * (8.8 / 20.5), 4);
   });
 
   it("aplica redução só ao item elegível de nota mista, considerando frete e desconto", () => {
-    const reduzido = calcularICMSProduto(item({ valor_frete: 10, valor_desconto: 5 }), "SP", "BA");
+    const reduzido = calcularICMSProduto(item({ valor_frete: 10, valor_desconto: 5, valor_ipi: 20 }), "SP", "BA");
     const comum = calcularICMSProduto(
-      item({ seq: "2", ncm: "99999999", valor_frete: 10, valor_desconto: 5 }),
+      item({ seq: "2", ncm: "99999999", valor_frete: 10, valor_desconto: 5, valor_ipi: 20 }),
       "SP",
       "BA",
     );
-    expect(reduzido.base_st).toBeCloseTo(105 * (5.14 / 20.5), 4);
+    expect(reduzido.base_st).toBeCloseTo(125 * (8.8 / 20.5), 4);
+    expect(reduzido.valor_icms_st).toBeCloseTo(125 * 0.088 - 7, 4);
     expect(comum.beneficio_5291).toBeNull();
-    expect(comum.base_st).toBe(105);
+    expect(comum.base_st).toBe(125);
   });
 
   it("recalcula explicitamente o Convênio sem depender da análise antiga", () => {
@@ -52,8 +53,8 @@ describe("redução por item no cálculo da nota", () => {
       "BA",
     );
     expect(calc.beneficio_5291?.anexo).toBe("II");
-    expect(calc.beneficio_5291?.carga_efetiva).toBe(7);
-    expect(calc.base_st).toBeCloseTo(100 * (7 / 20.5), 4);
+    expect(calc.beneficio_5291?.carga_efetiva).toBe(5.6);
+    expect(calc.base_st).toBeCloseTo(100 * (5.6 / 20.5), 4);
   });
 
   it("combina ST e redução no mesmo item, sem substituir o regime por REDUCAO_BC", () => {
@@ -82,7 +83,46 @@ describe("redução por item no cálculo da nota", () => {
       "BA",
     );
     expect(calc.tributacao).toBe("ICMS_ST");
-    expect(calc.beneficio_5291?.carga_efetiva).toBe(5.14);
+    expect(calc.beneficio_5291?.carga_efetiva).toBe(8.8);
     expect(calc.base_st).toBeLessThan(100);
+  });
+
+  it("inclui o IPI na base de ST com MVA sem alterar o ICMS próprio destacado", () => {
+    const calc = calcularICMSProduto(
+      item({
+        cst: "10", valor_ipi: 20, valor_icms: 7,
+        valor_frete: 10, valor_seguro: 5, valor_outras_desp: 3, valor_desconto: 2,
+        fcp_percentual: 2,
+        analise: [{ tipo: "ICMS_ST", fundamento: "ST aplicável", mva_original: "40%" }],
+      }),
+      "SP", "BA",
+    );
+    expect(calc.base_st_original).toBeCloseTo(136 * (1 + calc.mva_utilizada / 100), 4);
+    expect(calc.valor_icms_proprio).toBe(7);
+    expect(calc.beneficio_5291?.carga_efetiva).toBe(8.8);
+    expect(calc.valor_fcp_st).toBeCloseTo(calc.base_st * 0.02, 4);
+  });
+
+  it("não deixa componentes inválidos do XML contaminarem a base", () => {
+    const calc = calcularICMSProduto(
+      item({ valor_ipi: NaN, valor_frete: "", valor_seguro: null, valor_outras_desp: undefined }),
+      "SP", "BA",
+    );
+    expect(calc.base_calc).toBe(100);
+    expect(Number.isFinite(calc.valor_icms_st)).toBe(true);
+  });
+
+  it("usa a carga interna agrícola também no DIFAL e inclui o IPI do item", () => {
+    const calc = calcularICMSProduto(
+      item({
+        ncm: "87019200", descricao: "Trator agrícola", valor_ipi: 20, valor_icms: 5,
+        decisao_manual: { modo: "DIFAL" },
+      }),
+      "GO", "BA",
+    );
+    expect(calc.tributacao).toBe("DIFAL");
+    expect(calc.beneficio_5291?.carga_efetiva).toBe(5.6);
+    expect(calc.base_calc).toBe(120);
+    expect(calc.valor_difal).toBeCloseTo(120 * 0.056 - 5, 4);
   });
 });

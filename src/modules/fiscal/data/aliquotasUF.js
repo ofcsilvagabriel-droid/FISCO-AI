@@ -54,14 +54,16 @@ export function isImportadoPorCSTOrig(origCode) {
  * Retorno em REAIS.
  */
 export function calcularDIFAL(nota) {
-  const produto = Number(nota.produto || 0);
-  const frete   = Number(nota.frete   || 0);
-  const seguro  = Number(nota.seguro  || 0);
-  const outras  = Number(nota.outras  || 0);
-  const desconto = Number(nota.desconto || 0);
+  const valorSeguro = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
+  const produto = valorSeguro(nota.produto);
+  const frete   = valorSeguro(nota.frete);
+  const seguro  = valorSeguro(nota.seguro);
+  const outras  = valorSeguro(nota.outras);
+  const desconto = valorSeguro(nota.desconto);
+  const ipi = valorSeguro(nota.ipi);
 
-  // Lei Kandir (LC 87/96): IPI não integra a base de cálculo do ICMS.
-  const valor = Math.max(0, produto + frete + seguro + outras - desconto);
+  // No destino a consumidor final, o IPI integra o valor da operação.
+  const valor = Math.max(0, produto + frete + seguro + outras + ipi - desconto);
 
   const aliqInterPct = buscarAliquotaInterestadual(nota.ufOrigem, nota.ufDestino, !!nota.importado);
   const aliqInternaPct = buscarAliquotaInterna(nota.ufDestino);

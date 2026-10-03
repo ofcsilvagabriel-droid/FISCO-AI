@@ -603,6 +603,8 @@ for (const r of CONV_52_91_AGRICOLA) for (const n of r.ncm.split("/")) {
 
 const _SUL_SUDESTE_EX_ES = ["SP","RJ","MG","RS","SC","PR"];
 const _NNE_CO_ES = ["AC","AL","AM","AP","BA","CE","DF","ES","GO","MA","MS","MT","PA","PB","PE","PI","RN","RO","RR","SE","TO"];
+const CARGA_INTERNA_INDUSTRIAL = 8.80;
+const CARGA_INTERNA_AGRICOLA = 5.60;
 
 /** Identifica se o NCM pertence ao Anexo I (INDUSTRIAL) ou II (AGRICOLA) do Conv. 52/91. */
 export function identificarConv5291(ncm, descricao = "", anexoPreferido = null) {
@@ -632,12 +634,12 @@ export function cargaEfetivaConv5291(tipo, ufOrigem, ufDestino) {
   const interna = !o || !d || o === d;
   const interSulSE_NNE = !interna && _SUL_SUDESTE_EX_ES.includes(o) && _NNE_CO_ES.includes(d);
   if (tipo === "INDUSTRIAL") {
-    if (interna)          return 8.80;
+    if (interna)          return CARGA_INTERNA_INDUSTRIAL;
     if (interSulSE_NNE)   return 5.14;
     return 8.80;
   }
   // AGRICOLA
-  if (interna)          return 5.60;
+  if (interna)          return CARGA_INTERNA_AGRICOLA;
   if (interSulSE_NNE)   return 4.10;
   return 7.00;
 }
@@ -649,12 +651,14 @@ export function cargaEfetivaConv5291(tipo, ufOrigem, ufDestino) {
  *   { aplica, tipo, anexo, ncm, descricao, carga_efetiva, aliquota_interna,
  *     perc_base_reduzida (fator 0..1), fundamento }
  */
-export function beneficio5291(ncm, ufOrigem, ufDestino, aliquotaInterna, descricao = "", anexoPreferido = null) {
+export function beneficio5291(ncm, ufOrigem, ufDestino, aliquotaInterna, descricao = "", anexoPreferido = null, usarCargaInterna = false) {
   const found = identificarConv5291(ncm, descricao, anexoPreferido);
   if (!found) return null;
   const aliq = Number(aliquotaInterna) || 0;
   if (aliq <= 0) return null;
-  const carga = cargaEfetivaConv5291(found.tipo, ufOrigem, ufDestino);
+  const carga = usarCargaInterna
+    ? (found.tipo === "INDUSTRIAL" ? CARGA_INTERNA_INDUSTRIAL : CARGA_INTERNA_AGRICOLA)
+    : cargaEfetivaConv5291(found.tipo, ufOrigem, ufDestino);
   return {
     aplica: true,
     tipo: found.tipo,

@@ -1104,7 +1104,7 @@ function calcAntecipacaoParcial(produto, ufOrigem, ufDestino, aliqInter, vProd, 
   const icmsDestacado = (Number(icmsProprioApurado) > 0)
     ? Number(icmsProprioApurado)
     : (Number(produto.valor_icms) > 0 ? Number(produto.valor_icms) : (vProd * aliqInter / 100));
-  const baseAntecip = calcularBaseICMS(vProd, comp.frete, comp.seguro, comp.outrasDespesas, comp.desconto);
+  const baseAntecip = calcularBaseICMS(vProd, comp.frete, comp.seguro, comp.outrasDespesas, comp.desconto, comp.ipi);
   const aliqInterna = ALIQ_INTERNA_BA;
 
 
@@ -1113,25 +1113,18 @@ function calcAntecipacaoParcial(produto, ufOrigem, ufDestino, aliqInter, vProd, 
   // ICMS de origem (destacado) NÃO é alterado — apenas a BC de destino.
   // PROTEÇÃO: quando o CST da NF já indica base reduzida (ex.: 20/70), a nova
   // redução via Convênio é vedada — dupla redução não é permitida.
-  const b5291bruto = beneficio5291(produto.ncm, ufOrigem, ufDestino, aliqInterna, produto.descricao, produto.decisao_manual?.anexo_convenio_5291);
+  const b5291bruto = beneficio5291(produto.ncm, ufOrigem, ufDestino, aliqInterna, produto.descricao, produto.decisao_manual?.anexo_convenio_5291, true);
   const b5291 = (b5291bruto && !bloquearReducao) ? b5291bruto : null;
   const baseFinal = b5291 ? baseAntecip * b5291.perc_base_reduzida : baseAntecip;
   const icmsDestino = baseFinal * (aliqInterna / 100);
-  // Estorno proporcional do crédito: quando a base é reduzida no destino,
-  // o ICMS de origem só pode ser abatido na mesma proporção da base
-  // (RICMS/BA c/c Convênio ICMS 52/91). Sem isso, o crédito integral zera
-  // indevidamente a antecipação.
-  const creditoAbativel = b5291
-    ? icmsDestacado * b5291.perc_base_reduzida
-    : icmsDestacado;
+  // A cláusula quarta do Convênio 52/91 mantém o crédito da operação anterior.
+  const creditoAbativel = icmsDestacado;
   const vAntecip = Math.max(0, icmsDestino - creditoAbativel);
   const icmsSemBenef = baseAntecip * (aliqInterna / 100);
 
   const obsBase = `Antecipação: BC ${baseAntecip.toFixed(2)}${
     b5291 ? ` → reduzida a ${baseFinal.toFixed(2)} (${(b5291.perc_base_reduzida*100).toFixed(4)}%)` : ""
-  } × ${aliqInterna}% − ICMS próprio ${icmsDestacado.toFixed(2)}${
-    b5291 ? ` (crédito proporcional ${creditoAbativel.toFixed(2)})` : ""
-  } = R$ ${vAntecip.toFixed(2)}`;
+  } × ${aliqInterna}% − ICMS próprio ${creditoAbativel.toFixed(2)} = R$ ${vAntecip.toFixed(2)}`;
   const obs5291 = b5291
     ? ` · Conv. ICMS 52/91 (Anexo ${b5291.anexo} — ${b5291.tipo}) carga efetiva ${b5291.carga_efetiva.toFixed(2)}%`
     : "";
@@ -1222,7 +1215,7 @@ function aplicarFCP(calc, fcpPct) {
 export function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO") {
   const regras = (produto.analise || []).filter(a => a.tipo !== "NAO_ENCONTRADO" && a.tipo !== "ST_SUGERIDA" && !a.id?.startsWith("CONV_52_91"));
   const sugerida = (produto.analise || []).find(a => a.tipo === "ST_SUGERIDA");
-  const removerReducoes = !!(produto.decisao_manual?.remover_reducoes || produto.remover_reducoes);
+  let removerReducoes = !!(produto.decisao_manual?.remover_reducoes || produto.remover_reducoes);
   const vProd = numeroSeguro(produto.valor_total);
   const aliqInter = getAliqInterestadual(ufOrigem, ufDestino);
   const aliqInternaDestino = buscarAliquotaInterna(ufDestino);
@@ -1260,6 +1253,7 @@ export function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO")
     if (versaoApuracao && versaoApuracao.origem_memoria !== "AUTOMATICO_ANTERIOR") {
       const dmHist = HistoricoApuracaoService.comoDecisaoManual(versaoApuracao);
       if (dmHist) {
+        if (dmHist.remover_reducoes != null) removerReducoes = !!dmHist.remover_reducoes;
         if (dmHist.modo === "CONVENIO_52_91") produto = { ...produto, decisao_manual: dmHist };
         else decisaoManual = dmHist;
         logTecnico.push(`[MEMORIA_APURACAO] NCM ${produto.ncm} — aplicando versão v${versaoApuracao.versao_apuracao} (${versaoApuracao.origem_memoria}) da apuração anterior.`);
@@ -1620,8 +1614,8 @@ export function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO")
             : +(((1 + mvaInf/100) * (1 - aliqDest/100) / (1 - aliqInternaDestino/100) - 1) * 100).toFixed(4));
       const vICMSProprio = resolverIcmsProprio();
       const baseICMSm = extrairComponentesBaseICMS(produto);
-      const b5291m = !bloquearReducaoConvenio && dm.aplicar_reducao_5291
-        ? beneficio5291(produto.ncm, ufOrigem, ufDestino, aliqInternaDestino, produto.descricao, dm.anexo_convenio_5291)
+      const b5291m = !bloquearReducaoConvenio && dm.aplicar_reducao_5291 !== false
+        ? beneficio5291(produto.ncm, ufOrigem, ufDestino, aliqInternaDestino, produto.descricao, dm.anexo_convenio_5291, true)
         : null;
       const rST = calcularSTcomBeneficio({
         valorProduto: vProd,
@@ -1629,6 +1623,7 @@ export function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO")
         seguro: baseICMSm.seguro,
         outrasDespesas: baseICMSm.outrasDespesas,
         desconto: baseICMSm.desconto,
+        ipi: baseICMSm.ipi,
         mva: mvaAj, mvaAjustada: mvaAj, mvaOriginal: mvaInf,
         cargaEfetiva: b5291m?.carga_efetiva ?? null, aliquotaInterna: aliqInternaDestino,
         icmsProprio: vICMSProprio, fcpPercentual: produto.fcp_percentual || 0,
@@ -1641,6 +1636,7 @@ export function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO")
         fundamento: `Cálculo manual (usuário) · MVA ${mvaAj}% ${dm.mva_ja_ajustada ? "(já ajustada)" : "(ajuste automático)"}${dm.origem_memoria ? " · memória por NCM" : ""}`,
         base_calc: vProd, aliquota_aplicada: aliqInter,
         valor_icms_proprio: vICMSProprio,
+        base_st_original: rST.bc_st_original,
         base_st: rST.bc_st_reduzida, mva_utilizada: mvaAj, mva_informada: mvaInf,
         mva_ja_ajustada: !!dm.mva_ja_ajustada, aliq_interna: aliqInternaDestino,
         valor_icms_st: rST.icms_st,
@@ -1674,6 +1670,7 @@ export function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO")
       seguro: baseICMSd.seguro,
       outras: baseICMSd.outrasDespesas,
       desconto: baseICMSd.desconto,
+      ipi: baseICMSd.ipi,
       ufOrigem, ufDestino, importado,
       icmsOrigemDestacado: icmsProprioFinal > 0 ? icmsProprioFinal : produto.valor_icms,
     });
@@ -1681,7 +1678,7 @@ export function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO")
     // Convênio ICMS 52/91 — se enquadrado, aplica base reduzida também no DIFAL.
     // Regra de proteção: se CST 20/70 (base já reduzida na origem), NÃO aplicar
     // nova redução no destino — evita dupla redução de base.
-    const b5291 = beneficio5291(produto.ncm, ufOrigem, ufDestino, r.aliq_interna, produto.descricao, produto.decisao_manual?.anexo_convenio_5291);
+    const b5291 = beneficio5291(produto.ncm, ufOrigem, ufDestino, r.aliq_interna, produto.descricao, produto.decisao_manual?.anexo_convenio_5291, true);
     let baseFinal = r.base_calculo;
     let icmsDestinoFinal = r.icms_destino;
     let difalFinal = r.difal;
@@ -1785,11 +1782,12 @@ export function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO")
       frete: produto.valor_frete || 0,
       seguro: produto.valor_seguro || 0,
       despesas: (produto.outrasDespesas || produto.valor_outras_desp || 0) - (produto.valor_desconto || 0),
+      ipi: numeroSeguro(produto.valor_ipi),
       aliquotaInterna: aliqInternaDestino,
       icmsProprio,
     });
     const beneficioPauta = !bloquearReducaoConvenio
-      ? beneficio5291(produto.ncm, ufOrigem, ufDestino, aliqInternaDestino, produto.descricao, produto.decisao_manual?.anexo_convenio_5291)
+      ? beneficio5291(produto.ncm, ufOrigem, ufDestino, aliqInternaDestino, produto.descricao, produto.decisao_manual?.anexo_convenio_5291, true)
       : null;
     const basePauta = beneficioPauta ? r.base_calculo * beneficioPauta.perc_base_reduzida : r.base_calculo;
     const stPauta = Math.max(0, basePauta * (aliqInternaDestino / 100) - icmsProprio);
@@ -1927,7 +1925,7 @@ export function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO")
       : null;
     const fatorReducao = cargaEfetiva != null && aliqNominal > 0 ? Math.min(1, cargaEfetiva / aliqNominal) : 1;
     const compReducao = extrairComponentesBaseICMS(produto);
-    const baseOperacao = calcularBaseICMS(vProd, compReducao.frete, compReducao.seguro, compReducao.outrasDespesas, compReducao.desconto);
+    const baseOperacao = calcularBaseICMS(vProd, compReducao.frete, compReducao.seguro, compReducao.outrasDespesas, compReducao.desconto, compReducao.ipi);
     const baseReduzida = baseOperacao * fatorReducao;
     const valorICMS = baseReduzida * (aliqNominal / 100);
     const icmsOriginal = icmsProprioFinal || produto.valor_icms || (baseOperacao * aliqNominal / 100);
@@ -1999,7 +1997,7 @@ export function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO")
     // Convênio 52/91 aplicável? → aplica ST + Redução cumulativamente
     // PROTEÇÃO: se CST 20/70, a base já foi reduzida na origem → NÃO aplicar
     // nova redução via Convênio (dupla redução vedada).
-    const b5291bruto = beneficio5291(produto.ncm, ufOrigem, ufDestino, aliqInternaDestino, produto.descricao, produto.decisao_manual?.anexo_convenio_5291);
+    const b5291bruto = beneficio5291(produto.ncm, ufOrigem, ufDestino, aliqInternaDestino, produto.descricao, produto.decisao_manual?.anexo_convenio_5291, true);
     const b5291 = (b5291bruto && !bloquearReducaoConvenio) ? b5291bruto : null;
     if (b5291bruto && bloquearReducaoConvenio) {
       alertas.push({
@@ -2021,6 +2019,7 @@ export function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO")
       seguro: baseICMSst.seguro,
       outrasDespesas: baseICMSst.outrasDespesas,
       desconto: baseICMSst.desconto,
+      ipi: baseICMSst.ipi,
       mva: mvaAjustada,
       mvaAjustada, mvaOriginal: regra.mva_original,
       cargaEfetiva: b5291 ? b5291.carga_efetiva : null,
@@ -2077,11 +2076,10 @@ export function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO")
 
 // ============================================================
 // BASE DE CÁLCULO DO ICMS — Lei Kandir (LC 87/96)
-// BC = Produto + Frete + Seguro + Outras Despesas − Desconto
-// Não integram a base: IPI, PIS, COFINS.
+// BC = Produto + Frete + Seguro + Outras Despesas − Desconto (+ IPI quando cabível).
 // ============================================================
-function calcularBaseICMS(valorProduto, frete = 0, seguro = 0, outrasDespesas = 0, desconto = 0) {
-  const base = numeroSeguro(valorProduto) + numeroSeguro(frete) + numeroSeguro(seguro) + numeroSeguro(outrasDespesas) - numeroSeguro(desconto);
+function calcularBaseICMS(valorProduto, frete = 0, seguro = 0, outrasDespesas = 0, desconto = 0, ipi = 0) {
+  const base = numeroSeguro(valorProduto) + numeroSeguro(frete) + numeroSeguro(seguro) + numeroSeguro(outrasDespesas) + numeroSeguro(ipi) - numeroSeguro(desconto);
   return Math.max(0, base);
 }
 
@@ -2093,7 +2091,7 @@ function extrairComponentesBaseICMS(produto) {
     seguro: numeroSeguro(produto.valor_seguro),
     outrasDespesas: numeroSeguro(produto.outrasDespesas ?? produto.valor_outras_desp),
     desconto: numeroSeguro(produto.valor_desconto),
-    // IPI propositalmente não incluído (já destacado na NF-e)
+    ipi: numeroSeguro(produto.valor_ipi),
   };
 }
 
@@ -3470,7 +3468,8 @@ function CalcCard({produto, calculo, fcpConfig, onToggleFCP, popoverAberto, onAb
               ["Valor Operação", fmt(calculo.base_calc), C.blue],
               ["ICMS Próprio", fmt(calculo.valor_icms_proprio), C.yellow],
               ["MVA Ajustada", calculo.mva_utilizada ? fmtPct(calculo.mva_utilizada) : "—", C.yellow],
-              ["BC Substituição", fmt(calculo.base_st), C.blue],
+              ...(calculo.beneficio_5291 ? [["BC ST antes da redução", fmt(calculo.base_st_original), C.blue]] : []),
+              [calculo.beneficio_5291 ? "BC ST reduzida" : "BC Substituição", calculo.detalhe_calculo_indisponivel ? "—" : fmt(calculo.base_st), C.blue],
               ["Alíq. Interna Destino", fmtPct(calculo.aliq_interna||ALIQ_INTERNA_BA), C.blue],
               ["ICMS-ST", fmt(calculo.valor_icms_st), C.green],
               ["ICMS Total", fmt(calculo.valor_icms_total), C.green],
@@ -3481,9 +3480,9 @@ function CalcCard({produto, calculo, fcpConfig, onToggleFCP, popoverAberto, onAb
               </div>
             ))}
           </div>
-          <div style={{fontSize:11,color:C.muted,background:"rgba(0,0,0,0.2)",borderRadius:7,padding:"8px 12px",lineHeight:1.7}}>
-            <strong style={{color:C.sub}}>Fórmula:</strong> BC ST = {fmt(calculo.base_calc)} × (1 + {fmtPct(calculo.mva_utilizada||0)}) = <strong style={{color:`rgb(${C.yellow})`}}>{fmt(calculo.base_st)}</strong> | ICMS-ST = ({fmt(calculo.base_st)} × {fmtPct(calculo.aliq_interna||ALIQ_INTERNA_BA)}) − {fmt(calculo.valor_icms_proprio)} = <strong style={{color:`rgb(${C.green})`}}>{fmt(calculo.valor_icms_st)}</strong>
-          </div>
+          {!calculo.detalhe_calculo_indisponivel && <div style={{fontSize:11,color:C.muted,background:"rgba(0,0,0,0.2)",borderRadius:7,padding:"8px 12px",lineHeight:1.7}}>
+            <strong style={{color:C.sub}}>Fórmula:</strong> BC ST antes da redução = (Valor + Frete + Seguro + Outras Desp. + IPI − Desconto) × (1 + {fmtPct(calculo.mva_utilizada||0)}) = {fmt(calculo.base_st_original ?? calculo.base_st)}{calculo.beneficio_5291 && <> | BC ST reduzida = {fmt(calculo.base_st_original)} × ({fmtPct(calculo.beneficio_5291.carga_efetiva)} ÷ {fmtPct(calculo.aliq_interna||ALIQ_INTERNA_BA)}) = <strong style={{color:`rgb(${C.yellow})`}}>{fmt(calculo.base_st)}</strong></>} | ICMS-ST = ({fmt(calculo.base_st)} × {fmtPct(calculo.aliq_interna||ALIQ_INTERNA_BA)}) − {fmt(calculo.valor_icms_proprio)} = <strong style={{color:`rgb(${C.green})`}}>{fmt(calculo.valor_icms_st)}</strong>
+          </div>}
         </>
       )}
 
@@ -3495,7 +3494,8 @@ function CalcCard({produto, calculo, fcpConfig, onToggleFCP, popoverAberto, onAb
               ["Frete", fmt(produto.valor_frete||0), C.blue],
               ["IPI", fmt(produto.valor_ipi||0), C.blue],
               ["Desconto", fmt(produto.valor_desconto||0), C.yellow],
-              ["Base de Cálculo", fmt(calculo.base_calc), C.yellow],
+              [calculo.beneficio_5291 ? "Base integral" : "Base de Cálculo", fmt(calculo.base_calc), C.yellow],
+              ...(calculo.beneficio_5291 ? [["Base reduzida Conv. 52/91", fmt(calculo.base_st), C.yellow]] : []),
               ["Alíq. Interna BA", fmtPct(calculo.aliq_interna||ALIQ_INTERNA_BA), C.blue],
               ["ICMS Destacado na NF", fmt(calculo.valor_icms_proprio), C.yellow],
               ["Antecipação a Recolher", fmt(calculo.valor_icms_st), C.green],
@@ -3506,9 +3506,9 @@ function CalcCard({produto, calculo, fcpConfig, onToggleFCP, popoverAberto, onAb
               </div>
             ))}
           </div>
-          <div style={{fontSize:11,color:C.muted,background:"rgba(0,0,0,0.2)",borderRadius:7,padding:"8px 12px",lineHeight:1.7}}>
-            <strong style={{color:C.sub}}>Fórmula:</strong> Antecipação = (Valor + Frete + Seguro + Outras Desp. − Desconto) × Alíq. Interna − ICMS Destacado = ({fmt(produto.valor_total)} + {fmt(produto.valor_frete||0)} + {fmt(produto.valor_seguro||0)} + {fmt(produto.outrasDespesas||produto.valor_outras_desp||0)} − {fmt(produto.valor_desconto||0)}) × {fmtPct(calculo.aliq_interna||ALIQ_INTERNA_BA)} − {fmt(calculo.valor_icms_proprio)} = <strong style={{color:`rgb(${C.green})`}}>{fmt(calculo.valor_icms_st)}</strong> <span style={{color:C.muted}}>(IPI não integra a BC — LC 87/96)</span>
-          </div>
+          {!calculo.detalhe_calculo_indisponivel && <div style={{fontSize:11,color:C.muted,background:"rgba(0,0,0,0.2)",borderRadius:7,padding:"8px 12px",lineHeight:1.7}}>
+            <strong style={{color:C.sub}}>Fórmula:</strong> Base integral = Valor + Frete + Seguro + Outras Desp. + IPI − Desconto = {fmt(calculo.base_calc)}{calculo.beneficio_5291 && <> | Base reduzida = {fmt(calculo.base_calc)} × ({fmtPct(calculo.beneficio_5291.carga_efetiva)} ÷ {fmtPct(calculo.aliq_interna||ALIQ_INTERNA_BA)}) = <strong style={{color:`rgb(${C.yellow})`}}>{fmt(calculo.base_st)}</strong></>} | Antecipação = máx(0; {fmt(calculo.base_st)} × {fmtPct(calculo.aliq_interna||ALIQ_INTERNA_BA)} − {fmt(calculo.valor_icms_proprio)}) = <strong style={{color:`rgb(${C.green})`}}>{fmt(calculo.valor_icms_st)}</strong>
+          </div>}
         </>
       )}
 
@@ -3520,7 +3520,7 @@ function CalcCard({produto, calculo, fcpConfig, onToggleFCP, popoverAberto, onAb
               ["Valor Operação", fmt(calculo.base_calc), C.blue],
               ["Alíq. Interestadual", fmtPct(calculo.aliquota_aplicada), C.blue],
               ["Alíq. Interna Destino", fmtPct(calculo.aliq_interna), C.blue],
-              ["Base DIFAL (por dentro)", fmt(calculo.base_st), C.yellow],
+              [calculo.beneficio_5291 ? "Base DIFAL reduzida" : "Base DIFAL (por dentro)", calculo.detalhe_calculo_indisponivel ? "—" : fmt(calculo.base_st), C.yellow],
               [`ICMS Origem (${calculo.icms_origem_fonte==="NF"?"NF":"tabela"})`, fmt(calculo.valor_icms_proprio), C.yellow],
               ["ICMS Destino", fmt(calculo.icms_destino||0), C.yellow],
               ["DIFAL a Recolher", fmt(calculo.valor_difal||0), C.green],
@@ -3532,9 +3532,9 @@ function CalcCard({produto, calculo, fcpConfig, onToggleFCP, popoverAberto, onAb
               </div>
             ))}
           </div>
-          <div style={{fontSize:11,color:C.muted,background:"rgba(0,0,0,0.2)",borderRadius:7,padding:"8px 12px",lineHeight:1.7}}>
-            <strong style={{color:C.sub}}>Fórmula:</strong> Base = (Valor × (1 − {fmtPct(calculo.aliquota_aplicada)})) ÷ (1 − {fmtPct(calculo.aliq_interna)}) = <strong style={{color:`rgb(${C.yellow})`}}>{fmt(calculo.base_st)}</strong> | DIFAL = ICMS destino − ICMS origem = {fmt(calculo.icms_destino||0)} − {fmt(calculo.valor_icms_proprio)} = <strong style={{color:`rgb(${C.green})`}}>{fmt(calculo.valor_difal||0)}</strong>
-          </div>
+          {!calculo.detalhe_calculo_indisponivel && <div style={{fontSize:11,color:C.muted,background:"rgba(0,0,0,0.2)",borderRadius:7,padding:"8px 12px",lineHeight:1.7}}>
+            <strong style={{color:C.sub}}>Fórmula:</strong> {calculo.beneficio_5291 ? <>Base reduzida = {fmt(calculo.base_calc)} × ({fmtPct(calculo.beneficio_5291.carga_efetiva)} ÷ {fmtPct(calculo.aliq_interna)})</> : <>Base por dentro = (Valor × (1 − {fmtPct(calculo.aliquota_aplicada)})) ÷ (1 − {fmtPct(calculo.aliq_interna)})</>} = <strong style={{color:`rgb(${C.yellow})`}}>{fmt(calculo.base_st)}</strong> | DIFAL = ICMS destino − ICMS origem = {fmt(calculo.icms_destino||0)} − {fmt(calculo.valor_icms_proprio)} = <strong style={{color:`rgb(${C.green})`}}>{fmt(calculo.valor_difal||0)}</strong>
+          </div>}
         </>
       )}
 
@@ -4314,7 +4314,7 @@ export default function App(){
               <button
                 style={{...S.btn(selCalc.size?"primary":"ghost"),fontSize:11,padding:"4px 12px"}}
                 disabled={!selCalc.size}
-                onClick={()=>setModalRecalc({modo:"ICMS_ST",mva:"",mvaAj:false})}
+                onClick={()=>setModalRecalc({modo:"ICMS_ST",mva:"",mvaAj:false,aplicarReducao5291:true})}
               >Alterar cálculo selecionado</button>
               {(()=>{
                 const congeladosSel=produtos.filter(p=>selCalc.has(p.seq)&&p.calculo_congelado?.ativo).length;

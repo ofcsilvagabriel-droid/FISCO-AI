@@ -12,6 +12,8 @@ export interface ParametrosCongelados {
   mva_informada?: number | null;
   mva_ja_ajustada?: boolean;
   anexo_convenio_5291?: string | null;
+  aplicar_reducao_5291?: boolean | null;
+  remover_reducoes?: boolean | null;
   aliq_interna?: number;
   icms_proprio?: number;
   fcp_percentual?: number;
@@ -30,6 +32,7 @@ export interface CalculoCongelado {
   tributacao: string;
   modo_decisao: string;
   parametros_utilizados: ParametrosCongelados;
+  resultado_exibivel?: any;
   congelado_por: string;
   congelado_em: string;
   motivo: string;
@@ -81,6 +84,8 @@ export function congelarCalculo(
         novoCalculo?.mva_ja_ajustada ?? novoCalculo?.decisao_manual?.mva_ja_ajustada
       ),
       anexo_convenio_5291: novoCalculo?.decisao_manual?.anexo_convenio_5291 || null,
+      aplicar_reducao_5291: novoCalculo?.decisao_manual?.aplicar_reducao_5291 ?? null,
+      remover_reducoes: novoCalculo?.decisao_manual?.remover_reducoes ?? null,
       aliq_interna: num(novoCalculo?.aliq_interna),
       icms_proprio: num(novoCalculo?.valor_icms_proprio),
       fcp_percentual: num(novoCalculo?.fcp_percentual),
@@ -93,6 +98,7 @@ export function congelarCalculo(
     congelado_por: usuario || "Sistema",
     congelado_em: agora,
     motivo: motivo || `Usuário recalculou como ${novoCalculo?.tributacao || "—"}`,
+    resultado_exibivel: { ...novoCalculo },
     versoes_anteriores: anterior?.ativo
       ? [
           {
@@ -199,27 +205,35 @@ export function obterCalculoExibivel(produto: any, calculoAutomatico: any): any 
 
   const p = cg.parametros_utilizados || ({} as ParametrosCongelados);
   const valorST = cg.valor_icms_st || cg.valor_icms_antecipacao || 0;
+  const divergente = !calculoAutomatico ||
+    calculoAutomatico.tributacao !== cg.tributacao ||
+    Math.abs(num(calculoAutomatico.valor_icms_st) - valorST) > 0.01;
 
-  if (
-    calculoAutomatico &&
-    (calculoAutomatico.tributacao !== cg.tributacao ||
-      Math.abs(num(calculoAutomatico.valor_icms_st) - valorST) > 0.01)
-  ) {
+  if (calculoAutomatico && divergente) {
     logTecnico(
       `[IGNORADO_CONGELADO] Recálculo automático (${calculoAutomatico.tributacao}) ignorado para NCM ${produto?.ncm || "—"} — exibindo valor congelado (${cg.tributacao}).`,
     );
   }
 
+  const legadoSemDetalhe = !cg.resultado_exibivel;
+  const base = cg.resultado_exibivel || calculoAutomatico || {};
   return {
-    ...calculoAutomatico,
+    ...base,
     tributacao: cg.tributacao,
-    base_calc: p.base_calc ?? calculoAutomatico?.base_calc,
-    aliquota_aplicada: p.aliquota_icms ?? calculoAutomatico?.aliquota_aplicada,
-    aliq_interna: p.aliq_interna ?? calculoAutomatico?.aliq_interna,
-    mva_utilizada: p.mva_utilizada ?? calculoAutomatico?.mva_utilizada,
-    mva_informada: p.mva_informada ?? calculoAutomatico?.mva_informada,
+    base_calc: p.base_calc ?? base.base_calc,
+    aliquota_aplicada: p.aliquota_icms ?? base.aliquota_aplicada,
+    aliq_interna: p.aliq_interna ?? base.aliq_interna,
+    mva_utilizada: p.mva_utilizada ?? base.mva_utilizada,
+    mva_informada: p.mva_informada ?? base.mva_informada,
     mva_ja_ajustada: !!p.mva_ja_ajustada,
-    fcp_percentual: p.fcp_percentual ?? calculoAutomatico?.fcp_percentual,
+    fcp_percentual: p.fcp_percentual ?? base.fcp_percentual,
+    ...(legadoSemDetalhe ? {
+      base_st: null,
+      beneficio_5291: null,
+      etapas_calculo: [],
+      obs: "Cálculo histórico congelado: a base detalhada não foi preservada nesta versão. O valor recolhido permanece salvo; revise o item antes de usar o detalhamento.",
+      detalhe_calculo_indisponivel: true,
+    } : {}),
     valor_icms_proprio: cg.valor_icms,
     valor_icms_st: valorST,
     valor_difal: cg.valor_difal,
@@ -231,6 +245,8 @@ export function obterCalculoExibivel(produto: any, calculoAutomatico: any): any 
       mva_informada: p.mva_informada ?? null,
       mva_ja_ajustada: !!p.mva_ja_ajustada,
       anexo_convenio_5291: p.anexo_convenio_5291 || null,
+      aplicar_reducao_5291: p.aplicar_reducao_5291 ?? null,
+      remover_reducoes: p.remover_reducoes ?? null,
       congelado: true,
     },
     _congelado: true,

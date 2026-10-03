@@ -295,6 +295,7 @@ export function calcularSTporPauta({
   frete = 0,
   seguro = 0,
   despesas = 0,
+  ipi = 0,
   aliquotaInterna = 20.5,
   icmsProprio = 0,
   // Bloco 2 — contexto para resolução automática de pauta
@@ -304,6 +305,16 @@ export function calcularSTporPauta({
   uf = "BA",
   data = null,
 }) {
+  const numero = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
+  quantidade = numero(quantidade);
+  valorProduto = numero(valorProduto);
+  frete = numero(frete);
+  seguro = numero(seguro);
+  despesas = numero(despesas);
+  ipi = numero(ipi);
+  mva = numero(mva);
+  aliquotaInterna = numero(aliquotaInterna);
+  icmsProprio = numero(icmsProprio);
   const aliqInt = aliquotaInterna / 100;
 
   const pauta = resolverPauta({ ncm, cest, ean, uf, data, vPMC, pmpf });
@@ -319,8 +330,8 @@ export function calcularSTporPauta({
   } else {
     metodo = "MVA";
     const mvaFactor = 1 + (mva / 100);
-    base = (valorProduto + frete + seguro + despesas) * mvaFactor;
-    formula = `(${valorProduto.toFixed(2)} + ${frete.toFixed(2)} + ${seguro.toFixed(2)} + ${despesas.toFixed(2)}) × (1 + ${mva}%) = ${base.toFixed(2)}`;
+    base = (valorProduto + frete + seguro + despesas + ipi) * mvaFactor;
+    formula = `(${valorProduto.toFixed(2)} + ${frete.toFixed(2)} + ${seguro.toFixed(2)} + ${despesas.toFixed(2)} + ${ipi.toFixed(2)}) × (1 + ${mva}%) = ${base.toFixed(2)}`;
     if (mva <= 0) {
       avisos.push({
         tipo: "MVA_INDISPONIVEL",
@@ -368,6 +379,7 @@ export function calcularSTcomBeneficio({
   outrasDespesas = 0,
   despesas = 0,
   desconto = 0,
+  ipi = 0,
   mva = 0,             // MVA (original ou ajustada) já resolvida pelo chamador
   mvaAjustada = null,  // opcional — apenas registro
   mvaOriginal = null,  // opcional — apenas registro
@@ -379,12 +391,23 @@ export function calcularSTcomBeneficio({
   fundamentoST = "RICMS/BA – Convênio ICMS 142/18",
   fundamentoBeneficio = null,
 }) {
+  // A base presumida da ST inclui o IPI do item (LC 87/96, art. 8º, II).
+  const seguroNumero = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
+  aliquotaInterna = seguroNumero(aliquotaInterna);
+  icmsProprio = seguroNumero(icmsProprio);
+  fcpPercentual = seguroNumero(fcpPercentual);
+  mva = seguroNumero(mva);
+  if (reducaoBase != null) reducaoBase = seguroNumero(reducaoBase);
+  if (cargaEfetiva != null) cargaEfetiva = seguroNumero(cargaEfetiva);
   const aliqInt = aliquotaInterna / 100;
   const mvaFactor = 1 + (mva / 100);
-  // Lei Kandir (LC 87/96): BC = produto + frete + seguro + outras despesas − desconto.
-  // IPI NÃO integra a base de cálculo do ICMS.
-  const outras = outrasDespesas + despesas;
-  const bcOriginal = valorProduto + frete + seguro + outras - desconto;
+  valorProduto = seguroNumero(valorProduto);
+  frete = seguroNumero(frete);
+  seguro = seguroNumero(seguro);
+  desconto = seguroNumero(desconto);
+  ipi = seguroNumero(ipi);
+  const outras = seguroNumero(outrasDespesas) + seguroNumero(despesas);
+  const bcOriginal = Math.max(0, valorProduto + frete + seguro + outras + ipi - desconto);
   const bcSTOriginal = bcOriginal * mvaFactor;
 
   // Redução: prioridade → reducaoBase direta > cargaEfetiva derivada
@@ -400,7 +423,7 @@ export function calcularSTcomBeneficio({
   const fcpST = fcpPercentual > 0 ? bcSTReduzida * (fcpPercentual / 100) : 0;
 
   const etapas = [
-    { etapa: "1. BC Original (LC 87/96 — sem IPI)", valor: bcOriginal, formula: `${valorProduto.toFixed(2)} + ${frete.toFixed(2)} + ${seguro.toFixed(2)} + ${outras.toFixed(2)} - ${desconto.toFixed(2)}` },
+    { etapa: "1. BC Original (LC 87/96 — com IPI)", valor: bcOriginal, formula: `${valorProduto.toFixed(2)} + ${frete.toFixed(2)} + ${seguro.toFixed(2)} + ${outras.toFixed(2)} + ${ipi.toFixed(2)} - ${desconto.toFixed(2)}` },
     { etapa: `2. BC ST (× (1 + MVA ${mva}%))`, valor: bcSTOriginal, formula: `${bcOriginal.toFixed(2)} × ${mvaFactor.toFixed(4)}` },
     ...(percReducao > 0 ? [{
       etapa: `3. BC ST Reduzida (${(percReducao*100).toFixed(4)}%)`,
