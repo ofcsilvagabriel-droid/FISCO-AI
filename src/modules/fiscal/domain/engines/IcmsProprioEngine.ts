@@ -23,6 +23,9 @@ export type IcmsProprioInput = {
   baseIcmsXml?: number | null;
   /** pICMS do XML */
   aliquotaXml?: number | null;
+  /** Diferencia zero explícito de campo ausente; opcional para registros antigos. */
+  aliquotaInformada?: boolean;
+  valorIcmsInformado?: boolean;
   /** valor total do item (fallback de base, regra já existente no sistema) */
   valorTotal?: number | null;
   /** alíquota presumida pelo motor (interestadual/interna) */
@@ -44,7 +47,7 @@ export type IcmsProprioResult = {
 };
 
 const r2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100;
-const num = (n: unknown) => (Number(n) > 0 ? Number(n) : 0);
+const num = (n: unknown) => (Number.isFinite(Number(n)) && Number(n) > 0 ? Number(n) : 0);
 
 export function resolverIcmsProprio(input: IcmsProprioInput): IcmsProprioResult {
   const situacao = input.situacao ?? "TRIBUTADA";
@@ -79,17 +82,18 @@ export function resolverIcmsProprio(input: IcmsProprioInput): IcmsProprioResult 
 
   // Base: vBC do XML; na ausência, valor total do item (regra já existente).
   const base = baseXml > 0 ? baseXml : valorTotal;
-  if (!(base > 0)) {
+  if (!(base > 0) && !(valorIcmsXml > 0)) {
     logs.push("[ICMS_SEM_BASE] Base de cálculo do ICMS igual a zero. ICMS próprio não calculado.");
-    return vazio(aliqXml > 0 ? "XML" : aliqPresumida > 0 ? "PRESUMIDA" : "NAO_DETERMINADA", aliqXml || aliqPresumida, 0);
+    const temAliquotaXml = aliqXml > 0 || input.aliquotaInformada;
+    return vazio(temAliquotaXml ? "XML" : aliqPresumida > 0 ? "PRESUMIDA" : "NAO_DETERMINADA", temAliquotaXml ? aliqXml : aliqPresumida, 0);
   }
 
   let aliquota = 0;
   let origem: OrigemAliquotaICMS = "NAO_DETERMINADA";
-  if (aliqXml > 0) {
+  if (aliqXml > 0 || input.aliquotaInformada) {
     aliquota = aliqXml;
     origem = "XML";
-  } else if (valorIcmsXml > 0) {
+  } else if (valorIcmsXml > 0 && base > 0) {
     // ICMS destacado sem pICMS: o próprio destaque é a verdade do XML.
     aliquota = r2((valorIcmsXml / base) * 100);
     origem = "XML";
@@ -113,11 +117,11 @@ export function resolverIcmsProprio(input: IcmsProprioInput): IcmsProprioResult 
   const calculado = r2((base * aliquota) / 100);
 
   if (origem === "XML") {
-    // Alíquota do XML: usa o vICMS destacado quando existir (evita divergência
-    // de centavos com o documento); se vier zerado, calcula pela alíquota.
-    const valor = valorIcmsXml > 0 ? r2(valorIcmsXml) : calculado;
+    // Preserva inclusive zero explícito; registros antigos sem marcador
+    // mantêm o fallback já utilizado pelo sistema.
+    const valor = valorIcmsXml > 0 || input.valorIcmsInformado ? r2(valorIcmsXml) : calculado;
     logs.push(
-      valorIcmsXml > 0
+      valorIcmsXml > 0 || input.valorIcmsInformado
         ? `[ICMS_DESTACADO] Usando valor da NF: R$ ${valor.toFixed(2)} (alíquota XML ${aliquota}%).`
         : `[ICMS_CALCULADO_XML] vICMS zerado no XML. Alíquota ${aliquota}% × Base R$ ${base.toFixed(2)} = R$ ${valor.toFixed(2)}.`,
     );
@@ -131,6 +135,11 @@ export function resolverIcmsProprio(input: IcmsProprioInput): IcmsProprioResult 
       presumido: false,
       logs,
     };
+  }
+
+  if (input.valorIcmsInformado || valorIcmsXml > 0) {
+    logs.push(`[ICMS_DESTACADO] Preservado vICMS informado na NF: R$ ${valorIcmsXml.toFixed(2)}.`);
+    return { ...vazio(origem, aliquota, base), icms_proprio_calculado: valorIcmsXml };
   }
 
   logs.push(

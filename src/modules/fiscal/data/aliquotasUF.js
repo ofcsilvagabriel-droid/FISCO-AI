@@ -65,13 +65,16 @@ export function calcularDIFAL(nota) {
   // No destino a consumidor final, o IPI integra o valor da operação.
   const valor = Math.max(0, produto + frete + seguro + outras + ipi - desconto);
 
-  const aliqInterPct = buscarAliquotaInterestadual(nota.ufOrigem, nota.ufDestino, !!nota.importado);
+  const aliqInterPct = nota.aliquotaInterestadual != null && Number.isFinite(Number(nota.aliquotaInterestadual))
+    ? Number(nota.aliquotaInterestadual)
+    : buscarAliquotaInterestadual(nota.ufOrigem, nota.ufDestino, !!nota.importado);
   const aliqInternaPct = buscarAliquotaInterna(nota.ufDestino);
   const aliqInter   = aliqInterPct   / 100;
   const aliqInterna = aliqInternaPct / 100;
 
   // ICMS de origem: usa vICMS destacado quando informado; senão calcula
-  const icmsOrigem = (nota.icmsOrigemDestacado != null && nota.icmsOrigemDestacado > 0)
+  const temIcmsOrigem = nota.icmsOrigemDestacado != null && Number.isFinite(Number(nota.icmsOrigemDestacado));
+  const icmsOrigem = temIcmsOrigem
     ? Number(nota.icmsOrigemDestacado)
     : valor * aliqInter;
 
@@ -88,6 +91,6 @@ export function calcularDIFAL(nota) {
     icms_origem: icmsOrigem,
     icms_destino: icmsDestino,
     difal,
-    icms_origem_fonte: (nota.icmsOrigemDestacado != null && nota.icmsOrigemDestacado > 0) ? "NF" : "TABELA",
+    icms_origem_fonte: temIcmsOrigem ? "NF" : "TABELA",
   };
 }

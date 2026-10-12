@@ -20,6 +20,7 @@ import { DecisoesValidadasService } from "@/modules/fiscal/domain/services/Decis
 import { DescricaoIAService } from "@/modules/fiscal/domain/services/DescricaoIAService";
 import { CongelamentoService } from "@/modules/fiscal/domain/services/CongelamentoService";
 import MemoriaObsidian from "@/components/MemoriaObsidian";
+import CalculadoraFlutuante from "@/components/CalculadoraFlutuante";
 import { HistoricoApuracaoService } from "@/modules/fiscal/domain/services/HistoricoApuracaoService";
 import { resolverPorReferenciaExterna } from "@/modules/fiscal/engines/resolverReferenciaExterna";
 import { parsearNFe } from "@/modules/xml/services/parsearNFe";
@@ -116,6 +117,7 @@ function upsertRegistroArquivo(arq, nota, produtos, calculos) {
         valor_ipi: p.valor_ipi || 0,
         // valores informados no XML (conferência XML × cálculo)
         xml: {
+          ...p.xml,
           base_icms: p.base_icms || 0,
           aliquota_icms: p.aliquota_icms || 0,
           valor_icms: p.valor_icms || 0,
@@ -157,6 +159,11 @@ function upsertRegistroArquivo(arq, nota, produtos, calculos) {
         icms_proprio_presumido: !!c.icms_proprio_presumido,
         reducao_base: c.reducao_base ?? c.percentual_reducao ?? null,
         aliquota_aplicada: c.aliquota_aplicada,
+        aliquota_icms_utilizada: c.aliquota_icms_utilizada,
+        aliquota_interestadual: c.aliquota_interestadual,
+        origem_aliquota_icms: c.origem_aliquota_icms,
+        base_calculo_icms: c.base_calculo_icms,
+        icms_nf_original: c.icms_nf_original,
         aliquota_presumida: c.aliquota_presumida ?? null,
         base_icms_presumida: c.base_icms_presumida ?? null,
         aliq_interna: c.aliq_interna,
@@ -345,7 +352,7 @@ function exportarArquivoPDF(empresa, mesAno, registros, options = {}) {
         (p.metodo_pauta && p.metodo_pauta !== "MVA")
           ? `${p.metodo_pauta} ${fmt(p.valor_pmc || p.valor_pauta_unitario)} para BC ${fmt(p.base_st)}`
           : "—",
-        fmt(p.base_calc) + (p.icms_proprio_presumido ? " (presum.)" : ""), pct(p.aliquota_presumida||p.aliquota_aplicada),
+        fmt(p.base_calculo_icms ?? p.base_calc) + (p.icms_proprio_presumido ? " (presum.)" : ""), pct(p.aliquota_icms_utilizada ?? p.aliquota_presumida ?? p.aliquota_aplicada),
         fmt(p.valor_icms_proprio) + (p.icms_proprio_presumido ? " (presum.)" : ""),
         p.base_st ? fmt(p.base_st) : "—",
         p.mva ? pct(p.mva) + (p.tipo_calculo && p.tipo_calculo !== "Automático" ? " (man.)" : "") : "—",
@@ -997,7 +1004,7 @@ function analisarProduto(produto, ufOrigem, ufDestino) {
   // Só entra quando nenhuma regra de ICMS-ST do RICMS/BA foi confirmada.
   // ============================================================
   if (!resultados.some(r => r.tipo === "ICMS_ST") && produto.ncm) {
-    const aliqInterFB = getAliqInterestadual(ufOrigem, ufDestino);
+    const aliqInterFB = getAliqInterestadual(ufOrigem, ufDestino, produto);
     const selAuto = selecionarMVAAutopecas(produto.ncm, ufDestino, aliqInterFB, ALIQ_INTERNA_BA, ufOrigem);
     if (selAuto && selAuto.origem === "CONV_142_18") {
       resultados.push({
@@ -1048,11 +1055,17 @@ function analisarProduto(produto, ufOrigem, ufDestino) {
 // ============================================================
 // MOTOR DE CÁLCULO ICMS AUTOMÁTICO
 // ============================================================
-// Determina a alíquota interestadual com base nas UFs
-function getAliqInterestadual(ufOrigem, ufDestino) {
-  const sulSudeste = ["SP","RJ","MG","ES","RS","SC","PR"];
-  if (sulSudeste.includes(ufOrigem) && !sulSudeste.includes(ufDestino)) return 7;
-  return 12;
+// Preserva a alíquota do item; consulta a tabela de UFs somente na ausência.
+function getAliqInterestadual(ufOrigem, ufDestino, produto = {}) {
+  return resolverIcmsProprioFiscal({
+    aliquotaXml: produto.aliquota_icms,
+    aliquotaInformada: produto.__aliquota_simulada || produto.xml?.aliquota_icms_informada,
+    valorIcmsXml: produto.__aliquota_simulada ? null : produto.valor_icms,
+    valorIcmsInformado: produto.__aliquota_simulada ? false : produto.xml?.valor_icms_informado,
+    baseIcmsXml: produto.base_icms,
+    valorTotal: produto.valor_total,
+    aliquotaPresumida: buscarAliquotaInterestadual(ufOrigem, ufDestino, isImportadoPorCSTOrig(produto.orig)),
+  }).aliquota_icms_utilizada;
 }
 
 // Converte string de porcentagem "8,80%" → 8.80
@@ -1101,7 +1114,7 @@ function calcAntecipacaoParcial(produto, ufOrigem, ufDestino, aliqInter, vProd, 
   // ICMS próprio da operação: usa o valor já apurado pelo motor (destacado no
   // XML OU presumido pela alíquota interestadual). Só cai no XML/presunção
   // local quando o motor não informou nada.
-  const icmsDestacado = (Number(icmsProprioApurado) > 0)
+  const icmsDestacado = (icmsProprioApurado != null && Number.isFinite(Number(icmsProprioApurado)))
     ? Number(icmsProprioApurado)
     : (Number(produto.valor_icms) > 0 ? Number(produto.valor_icms) : (vProd * aliqInter / 100));
   const baseAntecip = calcularBaseICMS(vProd, comp.frete, comp.seguro, comp.outrasDespesas, comp.desconto, comp.ipi);
@@ -1217,7 +1230,7 @@ export function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO")
   const sugerida = (produto.analise || []).find(a => a.tipo === "ST_SUGERIDA");
   let removerReducoes = !!(produto.decisao_manual?.remover_reducoes || produto.remover_reducoes);
   const vProd = numeroSeguro(produto.valor_total);
-  const aliqInter = getAliqInterestadual(ufOrigem, ufDestino);
+  const aliqInter = getAliqInterestadual(ufOrigem, ufDestino, produto);
   const aliqInternaDestino = buscarAliquotaInterna(ufDestino);
 
 
@@ -1339,16 +1352,18 @@ export function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO")
   // não determinada. Isenção/não incidência nunca geram ICMS,
   // mesmo havendo alíquota presumida disponível.
   // ============================================================
-  const icmsDestacadoXml = Number(produto.valor_icms) || 0;
+  const icmsDestacadoXml = numeroSeguro(produto.xml?.valor_icms ?? produto.valor_icms);
   const situacaoIcms = permCST.isento
     ? "ISENTA"
     : (permCST.naoTributado || permCFOP.geraICMS === false)
       ? "NAO_INCIDENCIA"
       : (!gate.liberado.ICMS_PROPRIO ? "SEM_TRIBUTACAO" : "TRIBUTADA");
   const resIcms = resolverIcmsProprioFiscal({
-    valorIcmsXml: icmsDestacadoXml,
+    valorIcmsXml: produto.__aliquota_simulada ? null : icmsDestacadoXml,
     baseIcmsXml: produto.base_icms,
     aliquotaXml: produto.aliquota_icms,
+    aliquotaInformada: produto.__aliquota_simulada || produto.xml?.aliquota_icms_informada,
+    valorIcmsInformado: produto.__aliquota_simulada ? false : produto.xml?.valor_icms_informado,
     valorTotal: produto.valor_total,
     aliquotaPresumida: aliqInter,
     situacao: situacaoIcms,
@@ -1360,10 +1375,7 @@ export function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO")
   const icmsProprioFinal = resIcms.icms_proprio_calculado;
   const aliquotaIcmsUtilizada = resIcms.aliquota_icms_utilizada;
   if (houvePresuncaoIcms) {
-    memoriaCalc.push(`ICMS calculado por alíquota presumida: Base R$ ${baseIcmsPresuncao.toFixed(2)} × ${aliquotaIcmsUtilizada}% = R$ ${valorIcmsPresumido.toFixed(2)} (usado como ICMS próprio/destacado na NF)`);
-    produto.icms_presumido_valor = valorIcmsPresumido;
-    produto.icms_presumido_aliq = aliquotaIcmsUtilizada;
-    produto.icms_presumido_base = baseIcmsPresuncao;
+    memoriaCalc.push(`ICMS calculado por alíquota presumida: Base R$ ${baseIcmsPresuncao.toFixed(2)} × ${aliquotaIcmsUtilizada}% = R$ ${valorIcmsPresumido.toFixed(2)} (ICMS próprio apurado; sem destaque no XML)`);
   }
   const resolverIcmsProprio = () => icmsProprioFinal;
 
@@ -1379,7 +1391,7 @@ export function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO")
 
   // Tributações que legitimamente não geram ICMS próprio (não preencher).
   const TRIB_SEM_ICMS_PROPRIO = new Set([
-    "ISENCAO","NAO_TRIBUTADO","SUSPENSAO","DIFERIMENTO","SEM_TRIBUTACAO",
+    "ISENCAO","ISENTO","NAO_TRIBUTADO","SUSPENSAO","DIFERIMENTO","SEM_TRIBUTACAO",
     "SEM_INCIDENCIA_CFOP","CFOP_INVALIDO","ST_RETIDA_ANTERIOR","ST_JA_RETIDA","BLOQUEADO",
   ]);
   // Nunca devolve ICMS próprio zerado quando a operação é tributada e o motor
@@ -1408,7 +1420,7 @@ export function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO")
     cesta_basica: cestaBasica,
     memoria_apuracao: versaoApuracao || null,
 
-    icms_destacado_nf: icmsProprioFinal > 0,
+    icms_destacado_nf: icmsDestacadoXml > 0,
     icms_foi_presumido: houvePresuncaoIcms,
     icms_presumido: houvePresuncaoIcms,
     icms_proprio_presumido: houvePresuncaoIcms,
@@ -1420,8 +1432,9 @@ export function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO")
 
     // estrutura canônica — fonte única de verdade do ICMS próprio
     situacao_tributaria_icms: resIcms.situacao_tributaria_icms,
-    base_calculo_icms: resIcms.base_calculo_icms,
-    aliquota_icms_utilizada: aliquotaIcmsUtilizada,
+    base_calculo_icms: TRIB_SEM_ICMS_PROPRIO.has(obj.tributacao) ? 0 : obj.tributacao === "REDUCAO_BC" ? obj.base_calc : resIcms.base_calculo_icms,
+    aliquota_icms_utilizada: TRIB_SEM_ICMS_PROPRIO.has(obj.tributacao) ? 0 : aliquotaIcmsUtilizada,
+    aliquota_interestadual: aliqInter,
     origem_aliquota_icms: resIcms.origem_aliquota_icms,
     icms_proprio_calculado: icmsProprioDe(obj),
     valor_icms_xml: icmsDestacadoXml,
@@ -1431,14 +1444,12 @@ export function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO")
     base_calc: (Number(obj.base_calc) > 0 || resIcms.situacao_tributaria_icms !== "TRIBUTADA")
       ? obj.base_calc
       : (resIcms.base_calculo_icms || obj.base_calc || 0),
-    aliquota_aplicada: (Number(obj.aliquota_aplicada) > 0 || resIcms.situacao_tributaria_icms !== "TRIBUTADA")
-      ? obj.aliquota_aplicada
-      : (aliquotaIcmsUtilizada || obj.aliquota_aplicada || 0),
+    aliquota_aplicada: resIcms.situacao_tributaria_icms === "TRIBUTADA" && !TRIB_SEM_ICMS_PROPRIO.has(obj.tributacao)
+      ? aliquotaIcmsUtilizada
+      : numeroSeguro(obj.aliquota_aplicada),
 
-    // "ICMS na NF" / "ICMS destacado na NF" — recebem o valor fiscal apurado
-    icms_nf_original: houvePresuncaoIcms
-      ? valorIcmsPresumido
-      : (Number(obj.icms_nf_original) > 0 ? obj.icms_nf_original : (icmsDestacadoXml || icmsProprioDe(obj))),
+    // Destaque original do documento é independente de presunção e recálculo.
+    icms_nf_original: icmsDestacadoXml,
     valor_icms_proprio: icmsProprioDe(obj),
 
 
@@ -1672,7 +1683,8 @@ export function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO")
       desconto: baseICMSd.desconto,
       ipi: baseICMSd.ipi,
       ufOrigem, ufDestino, importado,
-      icmsOrigemDestacado: icmsProprioFinal > 0 ? icmsProprioFinal : produto.valor_icms,
+      aliquotaInterestadual: aliquotaIcmsUtilizada,
+      icmsOrigemDestacado: icmsProprioFinal,
     });
 
     // Convênio ICMS 52/91 — se enquadrado, aplica base reduzida também no DIFAL.
@@ -1889,7 +1901,7 @@ export function calcularICMSProduto(produto, ufOrigem, ufDestino, modo = "AUTO")
       });
       const bcFinal = produto.base_icms || vProd;
       const aliqNominal = produto.aliquota_icms || aliqInter;
-      const valorICMS = bcFinal * (aliqNominal/100);
+      const valorICMS = icmsProprioFinal;
       memoriaCalc.push(
         `Base Original: R$ ${vProd.toFixed(2)}`,
         `Base Reduzida no XML: R$ ${bcFinal.toFixed(2)}`,
@@ -2169,7 +2181,7 @@ function exportarRelatorioPDF(nota, produtos, calculos) {
   const horaAtual = dNow.toLocaleTimeString("pt-BR");
 
   const totalNF = produtos.reduce((s,p)=>s+(p.valor_total||0),0);
-  const totalICMSNF = calculos.reduce((s,c)=>s+(c.valor_icms_proprio||0),0);
+  const totalICMSNF = produtos.reduce((s,p)=>s+numeroSeguro(p.xml?.valor_icms ?? p.valor_icms),0);
   const totalICMSCalc = calculos.reduce((s,c)=>s+(c.valor_icms_total||0),0);
   const totalICMSST = calculos.reduce((s,c)=>s+(c.tributacao==="ICMS_ST" ? (c.valor_icms_st||0) : 0),0);
   const antecipacao = totaisAntecipacao(calculos);
@@ -2228,7 +2240,7 @@ function exportarRelatorioPDF(nota, produtos, calculos) {
         <td class="l small">${esc(c.fundamento||"—")}</td>
         <td class="r">${fmt(p.valor_total)}</td>
         <td class="r">${percRed>0 ? fmtPct(percRed) : "—"}</td>
-        <td class="r">${fmt(c.base_calc)}</td>
+        <td class="r">${fmt(c.base_calculo_icms ?? c.base_calc)}</td>
         <td class="r">${c.mva_utilizada ? fmtPct(c.mva_utilizada) : "—"}</td>
         <td class="r">${c.base_st ? fmt(c.base_st) : "—"}</td>
         <td class="c">${c.aliq_interna ? fmtPct(c.aliq_interna) : "—"}</td>
@@ -2311,7 +2323,7 @@ function exportarRelatorioPDF(nota, produtos, calculos) {
             ${linha("Fundamento legal", esc(c.fundamento||"—"))}
             ${c.icms_proprio_presumido
               ? linha("ICMS Próprio (Presumido)", `${fmt(c.valor_icms_proprio)} · Alíquota ${fmtPct(c.aliquota_presumida||c.presuncao_credito_aliq||c.aliquota_aplicada)} (interestadual) · Base ${fmt(c.base_icms_presumida||c.base_calc)} — fundamento: ausência de destaque na NF; aplicado como ICMS próprio em ST/DIFAL/antecipação`, "bold")
-              : (c.valor_icms_proprio > 0 ? linha("ICMS Próprio (Destacado)", `${fmt(c.valor_icms_proprio)} — conforme destaque na NF`) : "")}
+              : (c.valor_icms_proprio > 0 ? linha("ICMS próprio apurado", `${fmt(c.valor_icms_proprio)} · XML: ${fmt(p.xml?.valor_icms ?? p.valor_icms)}`) : "")}
             ${c.beneficio_5291 ? linha("Benefício", `Conv. ICMS 52/91 · Anexo ${esc(c.beneficio_5291.anexo)} — carga ${fmtPct(c.beneficio_5291.carga_efetiva)}`) : ""}
             ${c.percentual_reducao||c.fator_reducao ? linha("Redução de base", fmtPct(c.percentual_reducao ? c.percentual_reducao*100 : (1-c.fator_reducao)*100)) : ""}
             ${linha("Base de cálculo aplicada", fmt(c.base_calc))}
@@ -3356,9 +3368,9 @@ function CalcCard({produto, calculo, fcpConfig, onToggleFCP, popoverAberto, onAb
           </div>
         ):(
           <div style={{marginBottom:10,padding:"8px 11px",borderRadius:10,background:"rgba(52,211,153,0.10)",border:"1px solid rgba(52,211,153,0.35)",color:"#a7f3d0",fontSize:11.5,lineHeight:1.6}}>
-            <strong>💾 ICMS Próprio (DESTACADO)</strong>
-            <div>Valor: {fmt(calculo.valor_icms_proprio)} · Base: {fmt(calculo.base_calc)}</div>
-            <div style={{color:C.sub}}>Conforme destaque na NF.</div>
+            <strong>ICMS próprio {Math.abs(numeroSeguro(calculo.valor_icms_proprio)-numeroSeguro(produto.valor_icms))<0.005 ? "(destacado no XML)" : "(apurado)"}</strong>
+            <div>Valor: {fmt(calculo.valor_icms_proprio)} · Alíquota: {fmtPct(calculo.aliquota_icms_utilizada ?? calculo.aliquota_aplicada)} · Base: {fmt(calculo.base_calculo_icms ?? calculo.base_calc)}</div>
+            <div style={{color:C.sub}}>XML: alíquota {fmtPct(produto.xml?.aliquota_icms ?? produto.aliquota_icms)} · ICMS {fmt(produto.xml?.valor_icms ?? produto.valor_icms)}.</div>
           </div>
         )
       )}
@@ -3370,7 +3382,7 @@ function CalcCard({produto, calculo, fcpConfig, onToggleFCP, popoverAberto, onAb
       {(()=>{
         const dm=calculo.decisao_manual||null;
         const partes=[];
-        partes.push(`Base ICMS ${fmt(calculo.base_calc)}${calculo.icms_proprio_presumido?" (crédito presumido)":""}`);
+        partes.push(`Base ICMS ${fmt(calculo.base_calculo_icms ?? calculo.base_calc)}${calculo.icms_proprio_presumido?" (crédito presumido)":""}`);
         if(calculo.aliquota_aplicada)partes.push(`Alíq ${fmtPct(calculo.aliquota_aplicada)} → ICMS ${fmt(calculo.valor_icms_proprio)}`);
         if(calculo.metodo_pauta&&calculo.metodo_pauta!=="MVA")partes.push(`Pauta ${calculo.metodo_pauta} ${fmt(calculo.base_st)}${calculo.fonte_pauta?` (${calculo.fonte_pauta})`:""}`);
         if(calculo.base_st>0)partes.push(`Base ST ${fmt(calculo.base_st)}`);
@@ -3427,7 +3439,7 @@ function CalcCard({produto, calculo, fcpConfig, onToggleFCP, popoverAberto, onAb
             ["Base de Cálculo", fmt(calculo.base_calc), C.green],
             ["Alíquota ICMS", "0,00%", C.green],
             ["ICMS Calculado", fmt(calculo.valor_icms_total), C.green],
-            ["ICMS na NF", fmt(calculo.icms_foi_presumido ? calculo.valor_icms_proprio : calculo.icms_nf_original) + (calculo.icms_foi_presumido ? " (presum.)" : ""), C.gray],
+            ["ICMS na NF", fmt(produto.xml?.valor_icms ?? produto.valor_icms), C.gray],
             ["Economia Fiscal", fmt(calculo.economia), C.green],
           ].map(([l,v,col])=>(
             <div key={l} style={{background:`rgba(${col},0.08)`,borderRadius:8,padding:"9px 12px"}}>
@@ -3570,6 +3582,7 @@ export default function App(){
   const[xmlInput,setXmlInput]=useState("");
   const[nota,setNota]=useState(null);
   const[produtos,setProdutos]=useState([]);
+  const revisaoAnaliseRef=useRef(0);
   const[calculos,setCalculos]=useState([]);
   const[overrides,setOverrides]=useState({});
   const overridesTimersRef=useRef({});
@@ -3677,6 +3690,7 @@ export default function App(){
   // Aplica/altera FCP num único produto e recalcula APENAS aquele item.
   // A alteração de FCP é uma intervenção manual → congela o cálculo.
   const aplicarFCPProduto = useCallback((seq, ativo, percentual = 2.00) => {
+    revisaoAnaliseRef.current++;
     const pct = parseFloat(percentual) || 0;
     const orig = nota?.uf_origem || ufOrigem;
     const dest = nota?.uf_destino || ufDestino;
@@ -3704,7 +3718,7 @@ export default function App(){
           tipoCalculo: "MANUAL_CONGELADO", usuario: usuarioAtual,
           notaOrigem: nota ? { numero: nota.numero, serie: nota.serie, chave_acesso: nota.chave, data: nota.data_emissao } : null,
           empresaId: empresaIdFcp,
-          aliquotaInterestadual: getAliqInterestadual(orig, dest),
+          aliquotaInterestadual: getAliqInterestadual(orig, dest, base),
         });
       }
       return fcpNext;
@@ -3717,6 +3731,7 @@ export default function App(){
   // Importação em lote: processa cada XML, salva no Arquivo Fiscal e
   // adiciona ao Histórico (para aparecer no detalhamento).
   const importarLote=useCallback(async(files)=>{
+    revisaoAnaliseRef.current++;
     setLoteStatus({processando:true,total:files.length,ok:0,erro:0,empresas:new Set(),detalhes:[]});
     let arqAcc=arquivo;
     const novosHist=[];
@@ -3745,7 +3760,7 @@ export default function App(){
               ncm:pr.ncm,descricao:pr.descricao,calculo:c,
               tipoCalculo:(c.metodo_pauta&&c.metodo_pauta!=="MVA")?"AUTOMATICO_PAUTA":"AUTOMATICO",
               usuario:"SISTEMA_AUTOMATICO",notaOrigem,empresaId:empId,
-              aliquotaInterestadual:getAliqInterestadual(orig,dest),
+              aliquotaInterestadual:getAliqInterestadual(orig,dest,pr),
             });
           });
         }catch{/* memória é auxiliar */}
@@ -3813,6 +3828,7 @@ export default function App(){
   // "MANTIDA"   → mantém como Antecipação Parcial (comportamento padrão).
   // null        → reverte para o estado original.
   const decidirST = useCallback((seq, decisao) => {
+    revisaoAnaliseRef.current++;
     setStDecisoes(prev => {
       const next = {...prev};
       if (decisao == null) delete next[seq]; else next[seq] = decisao;
@@ -3874,6 +3890,7 @@ export default function App(){
   }, [nota, ufOrigem, ufDestino, modoCalculo]);
 
   const analisar=useCallback((xmlStr,ufO,ufD)=>{
+    const revisao=++revisaoAnaliseRef.current;
     const xml=xmlStr||xmlInput;
     setOverrides({});
     if(!xml.trim()){setErro("Cole ou carregue o XML da NF-e antes de analisar.");return;}
@@ -3899,7 +3916,7 @@ export default function App(){
           ncm:pr.ncm,descricao:pr.descricao,calculo:c,
           tipoCalculo:c._congelado?"MANUAL_CONGELADO":((c.metodo_pauta&&c.metodo_pauta!=="MVA")?"AUTOMATICO_PAUTA":"AUTOMATICO"),
           usuario:"SISTEMA_AUTOMATICO",notaOrigem,empresaId:empId,
-          aliquotaInterestadual:getAliqInterestadual(orig,dest),
+          aliquotaInterestadual:getAliqInterestadual(orig,dest,pr),
         });
       });
       setHistApuracoes(HistoricoApuracaoService.listar());
@@ -3911,7 +3928,8 @@ export default function App(){
     // Etapa auxiliar: expande abreviações comerciais por IA e reanalisa
     // (a IA nunca decide o status — apenas alimenta a comparação textual).
     DescricaoIAService.preparar(p.map(pr=>pr.descricao)).then(()=>{
-      const prods2=p.map(pr=>({...pr,analise:analisarProduto(pr,orig,dest)}));
+      if(revisao!==revisaoAnaliseRef.current)return;
+      const prods2=prods.map(pr=>({...pr,analise:analisarProduto(pr,orig,dest)}));
       const calcs2=prods2.map(pr=>calcularProdComFCP(pr,orig,dest,modoCalculo));
       setProdutos(prods2); setCalculos(calcs2);
     }).catch(()=>{});
@@ -3932,6 +3950,7 @@ export default function App(){
   useEffect(()=>{ setHistApuracoes(HistoricoApuracaoService.listar()); },[]);
 
   const carregarDoHistorico=(entry)=>{
+    revisaoAnaliseRef.current++;
     setOverrides({});
     setNota(entry.nota); setProdutos(entry.produtos); setCalculos(entry.calculos||[]); setXmlInput(entry.xml);
     setAnalisado(true); setHistSel(entry.id); setTab("calculo"); setStDecisoes({});
@@ -3939,7 +3958,7 @@ export default function App(){
 
   const limparHistorico=(id)=>setHistorico(h=>h.filter(e=>e.id!==id));
 
-  const reset=()=>{setXmlInput("");setNota(null);setProdutos([]);setCalculos([]);setOverrides({});setErro(null);setAnalisado(false);setTab("importar");setBusca("");setExpandido(null);setStDecisoes({});};
+  const reset=()=>{revisaoAnaliseRef.current++;setXmlInput("");setNota(null);setProdutos([]);setCalculos([]);setOverrides({});setErro(null);setAnalisado(false);setTab("importar");setBusca("");setExpandido(null);setStDecisoes({});};
 
 
   const stats=useMemo(()=>{
@@ -3948,7 +3967,7 @@ export default function App(){
     const comST=produtos.filter(p=>p.analise.some(a=>a.tipo==="ICMS_ST")).length;
     const comBeneficio=produtos.filter(p=>p.analise.some(a=>a.tipo==="REDUCAO_BC")).length;
     const semRegra=produtos.filter(p=>p.analise.every(a=>a.tipo==="NAO_ENCONTRADO")).length;
-    const totalICMSNF=calculosVisiveis.reduce((s,c)=>s+(c.valor_icms_proprio||0),0);
+    const totalICMSNF=produtos.reduce((s,p)=>s+numeroSeguro(p.xml?.valor_icms ?? p.valor_icms),0);
     const totalICMSCalc=calculosVisiveis.reduce((s,c)=>s+(c.valor_icms_total||0),0);
     const totalICMSST=calculosVisiveis.reduce((s,c)=>s+(c.tributacao==="ICMS_ST"?(c.valor_icms_st||0):0),0);
     const antecipacao=totaisAntecipacao(calculosVisiveis);
@@ -4248,7 +4267,7 @@ export default function App(){
                                   )}
                                   {p.base_icms>0&&(
                                     <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:7,marginTop:10}}>
-                                      {[["Base ICMS na NF",`R$ ${p.base_icms.toLocaleString("pt-BR",{minimumFractionDigits:2})}`],["Alíquota ICMS na NF",`${p.icms_presumido_valor>0?p.icms_presumido_aliq:p.aliquota_icms}%${p.icms_presumido_valor>0?" (presum.)":""}`],["Valor ICMS na NF",`R$ ${(p.icms_presumido_valor>0?p.icms_presumido_valor:(p.valor_icms||0)).toLocaleString("pt-BR",{minimumFractionDigits:2})}${p.icms_presumido_valor>0?" (presum.)":""}`]].map(([l,v])=>(
+                                      {[["Base ICMS na NF",fmt(p.xml?.base_icms ?? p.base_icms)],["Alíquota ICMS na NF",`${numeroSeguro(p.xml?.aliquota_icms ?? p.aliquota_icms)}%`],["Valor ICMS na NF",fmt(p.xml?.valor_icms ?? p.valor_icms)]].map(([l,v])=>(
                                         <div key={l} style={{background:"rgba(255,255,255,0.03)",borderRadius:6,padding:"8px 11px"}}>
                                           <div style={{fontSize:10,color:C.muted}}>{l}</div>
                                           <div style={{fontSize:13,fontWeight:700,color:C.text,marginTop:2}}>{v}</div>
@@ -4280,7 +4299,7 @@ export default function App(){
             <div style={{...S.statsGrid,gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",marginBottom:20}}>
               <Stat label="Total Produtos"      value={stats.total}                                                                                    col={C.blue}/>
               <Stat label="Valor Total NF"      value={`R$ ${produtos.reduce((s,p)=>s+p.valor_total,0).toLocaleString("pt-BR",{minimumFractionDigits:2})}`} col={C.blue}/>
-              <Stat label="ICMS na NF"          value={fmt(stats.totalICMSNF) + (stats.temPresuncaoICMSNF ? " (presum.)" : "")}                           col={C.gray}  sub="original"/>
+              <Stat label="ICMS na NF"          value={fmt(stats.totalICMSNF)}                           col={C.gray}  sub="original do XML"/>
               <Stat label="ICMS Calculado"      value={fmt(stats.totalICMSCalc)}                                                                       col={C.green} sub="após regras"/>
               <Stat label="ICMS-ST a Recolher"  value={fmt(stats.totalICMSST)}                                                                         col={C.blue}  sub="RICMS/BA"/>
               <Stat label="ICMS Antecipação bruta" value={fmt(stats.totalAntecipacao)}                                                                col={C.yellow} sub="parcial BA"/>
@@ -4328,6 +4347,7 @@ export default function App(){
                       title={congeladosSel?"Descongelar os produtos selecionados":"Selecione ao menos um produto congelado"}
                       onClick={()=>{
                         if(!window.confirm(`Deseja descongelar ${congeladosSel} produto(s)? O cálculo voltará ao automático.`))return;
+                        revisaoAnaliseRef.current++;
                         const seqs=new Set(selCalc);
                         const orig=nota?.uf_origem||ufOrigem, dest=nota?.uf_destino||ufDestino;
                         setProdutos(prods=>{
@@ -4475,12 +4495,13 @@ export default function App(){
                             ncm:p.ncm,descricao:p.descricao,calculo:calcExib,
                             tipoCalculo:"MANUAL_CONGELADO",usuario:usuarioAtual,notaOrigem,
                             empresaId:p.empresa_id||empresaIdDe(nota),
-                            aliquotaInterestadual:getAliqInterestadual(ufOrigem,ufDestino),
+                            aliquotaInterestadual:getAliqInterestadual(orig,dest,p),
                           });
                         });
                         return {novos,calcs};
                       };
                       const dm=base;
+                      revisaoAnaliseRef.current++;
                       const {novos,calcs}=rodar(dm);
                       const forcados=calcs.reduce((a,c)=>a+((c?.alertas||[]).some(x=>x?.tipo==="CALC_MANUAL_FORCADO")?1:0),0);
                       setProdutos(novos);
@@ -4569,8 +4590,8 @@ export default function App(){
                           <td style={S.td}><span style={S.tag}>{p.ncm}</span></td>
                           <td style={{...S.td,fontWeight:700,color:"#68d391",whiteSpace:"nowrap"}}>{fmt(p.valor_total)}</td>
                           <td style={S.td}><Chip tipo={c.tributacao||"NORMAL"}/></td>
-                          <td style={{...S.td,color:C.sub,whiteSpace:"nowrap"}}>{fmt(c.base_calc)}</td>
-                          <td style={{...S.td,color:C.muted,whiteSpace:"nowrap"}}>{c.aliquota_aplicada ? `${parseFloat(c.aliquota_aplicada).toFixed(2).replace(".",",")}%` : "—"}</td>
+                          <td style={{...S.td,color:C.sub,whiteSpace:"nowrap"}}>{fmt(c.base_calculo_icms ?? c.base_calc)}</td>
+                          <td style={{...S.td,color:C.muted,whiteSpace:"nowrap"}}>{c.aliquota_aplicada != null ? `${numeroSeguro(c.aliquota_aplicada).toFixed(2).replace(".",",")}%` : "—"}</td>
                           <td style={{...S.td,color:C.sub,whiteSpace:"nowrap"}}>{fmt(c.valor_icms_proprio)}</td>
                           <td style={{...S.td,color:`rgb(${C.blue})`,fontWeight:700,whiteSpace:"nowrap"}}>{c.tributacao==="ICMS_ST"&&c.valor_icms_st>0?fmt(c.valor_icms_st):"—"}</td>
                           <td style={{...S.td,color:`rgb(${C.yellow})`,fontWeight:700,whiteSpace:"nowrap"}}>{c.tributacao==="ANTECIPACAO"?fmt(c.valor_icms_st):fmt(0)}</td>
@@ -4870,6 +4891,7 @@ export default function App(){
 
         </main>
       </div>
+      <CalculadoraFlutuante />
     </div>
   );
 }

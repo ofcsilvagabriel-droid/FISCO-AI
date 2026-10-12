@@ -75,6 +75,8 @@ export function parsearNFe(xmlStr) {
       const pmpfFinal = pmpfTag || extrairValorTag(textoLivre,"PMPF");
       const cstProd = get(icms,"CST")||get(icms,"CSOSN")||"";
       const permCST = interpretarCST(cstProd);
+      const numeroICMS = (tag) => Number.isFinite(Number(get(icms, tag))) ? Number(get(icms, tag)) : 0;
+      const informadoICMS = (tag) => get(icms, tag) !== "" && Number.isFinite(Number(get(icms, tag)));
       produtos.push({
         seq:det.getAttribute("nItem")||(i+1).toString(),
         codigo:get(prod,"cProd"), descricao:xProd, ncm:get(prod,"NCM"),
@@ -89,8 +91,12 @@ export function parsearNFe(xmlStr) {
         valor_outras_desp:parseFloat(get(prod,"vOutro")||0),
         cst:cstProd,
         orig:get(icms,"orig")||"",
-        base_icms:parseFloat(get(icms,"vBC")||0), aliquota_icms:parseFloat(get(icms,"pICMS")||0),
-        valor_icms:parseFloat(get(icms,"vICMS")||0), valor_ipi:parseFloat(get(ipi,"vIPI")||0),
+        base_icms:numeroICMS("vBC"), aliquota_icms:numeroICMS("pICMS"),
+        valor_icms:numeroICMS("vICMS"), valor_ipi:parseFloat(get(ipi,"vIPI")||0),
+        xml: {
+          base_icms: numeroICMS("vBC"), aliquota_icms: numeroICMS("pICMS"), valor_icms: numeroICMS("vICMS"),
+          aliquota_icms_informada: informadoICMS("pICMS"), valor_icms_informado: informadoICMS("vICMS"),
+        },
         valor_icms_st_ret:parseFloat(get(icms,"vICMSSTRet")||0),
         base_icms_st_xml:parseFloat(get(icms,"vBCST")||0),
         valor_icms_st_xml:parseFloat(get(icms,"vICMSST")||0),

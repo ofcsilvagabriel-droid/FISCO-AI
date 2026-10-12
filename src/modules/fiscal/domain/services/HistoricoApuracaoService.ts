@@ -452,7 +452,7 @@ export const HistoricoApuracaoService = {
     const faixa =
       regime === "ST"
         ? faixaInterestadual(
-            params.aliquotaInterestadual ?? c.aliquota_interestadual ?? c.aliq_interestadual,
+            c.aliquota_interestadual ?? c.aliquota_icms_utilizada ?? params.aliquotaInterestadual ?? c.aliq_interestadual ?? c.aliquota_aplicada,
           )
         : "NA";
     const historico =
@@ -647,7 +647,7 @@ export const HistoricoApuracaoService = {
       const regime = derivarRegime(c);
       const faixa =
         regime === "ST"
-          ? faixaInterestadual(params.aliquotaInterestadual ?? c.aliquota_interestadual ?? c.aliq_interestadual)
+          ? faixaInterestadual(c.aliquota_interestadual ?? c.aliquota_icms_utilizada ?? params.aliquotaInterestadual ?? c.aliq_interestadual ?? c.aliquota_aplicada)
           : "NA";
       const existente = HistoricoApuracaoService.buscarHistoricoNCM(params.ncm, params.empresaId, faixa);
       const corrente = existente?.apuracoes?.find(

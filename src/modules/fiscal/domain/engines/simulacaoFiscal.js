@@ -27,7 +27,13 @@ export function aplicarOverrides(produto, override = {}) {
   permitido.forEach((campo) => {
     if (Object.prototype.hasOwnProperty.call(override, campo)) aplicado[campo] = override[campo];
   });
-  return { ...produto, ...aplicado };
+  return {
+    ...produto, ...aplicado,
+    ...(Object.prototype.hasOwnProperty.call(aplicado, "aliquota_icms") ? {
+      __aliquota_simulada: true,
+      xml: produto.xml || { base_icms: produto.base_icms, aliquota_icms: produto.aliquota_icms, valor_icms: produto.valor_icms },
+    } : {}),
+  };
 }
 
 /** Rateia um valor de cabeçalho por valor de produto, com o último item absorvendo centavos. */
