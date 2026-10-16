@@ -22,7 +22,7 @@ import { CongelamentoService } from "@/modules/fiscal/domain/services/Congelamen
 import MemoriaObsidian from "@/components/MemoriaObsidian";
 import CalculadoraFlutuante from "@/components/CalculadoraFlutuante";
 import { HistoricoApuracaoService } from "@/modules/fiscal/domain/services/HistoricoApuracaoService";
-import { HistoricoImportacaoService } from "@/modules/fiscal/domain/services/HistoricoImportacaoService";
+import { HistoricoImportacaoService, identidadeImportacao, mesclarHistorico } from "@/modules/fiscal/domain/services/HistoricoImportacaoService";
 import { resolverPorReferenciaExterna } from "@/modules/fiscal/engines/resolverReferenciaExterna";
 import { parsearNFe } from "@/modules/xml/services/parsearNFe";
 
@@ -3801,7 +3801,7 @@ export default function App(){
     }
     if(importados.length)setArquivo(prev=>importados.reduce((acc,{notaFinal,prods,calcs})=>upsertRegistroArquivo(acc,notaFinal,prods,calcs).next,prev));
     if(novosHist.length){
-      setHistorico(h=>[...novosHist,...h]);
+      setHistorico(h=>mesclarHistorico(h,novosHist));
     }
     const resumo={processando:false,total:files.length,ok,erro,empresas:Array.from(empresas),detalhes};
     setLoteStatus(resumo);
@@ -3949,7 +3949,7 @@ export default function App(){
       setHistApuracoes(HistoricoApuracaoService.listar());
     }catch{/* histórico é auxiliar */}
     const histId=Date.now()+Math.random();
-    setHistorico(h=>[{id:histId,data:new Date().toLocaleString("pt-BR"),nota:notaFinal,produtos:prods,calculos:calcs,xml,modoCalculo},...h]);
+    setHistorico(h=>mesclarHistorico(h,[{id:histId,data:new Date().toLocaleString("pt-BR"),nota:notaFinal,produtos:prods,calculos:calcs,xml,modoCalculo}]));
     setArquivo(prev=>upsertRegistroArquivo(prev,notaFinal,prods,calcs).next);
     // Etapa auxiliar: expande abreviações comerciais por IA e reanalisa
     // (a IA nunca decide o status — apenas alimenta a comparação textual).
@@ -3958,7 +3958,8 @@ export default function App(){
       const prods2=prods.map(pr=>({...pr,analise:analisarProduto(pr,orig,dest)}));
       const calcs2=prods2.map(pr=>calcularProdComFCP(pr,orig,dest,modoCalculo));
       setProdutos(prods2); setCalculos(calcs2);
-      setHistorico(h=>h.map(entry=>entry.id===histId?{...entry,produtos:prods2,calculos:calcs2}:entry));
+      const identidade=identidadeImportacao({nota:notaFinal,xml});
+      setHistorico(h=>h.map(entry=>(identidade?identidadeImportacao(entry)===identidade:entry.id===histId)?{...entry,produtos:prods2,calculos:calcs2}:entry));
       setArquivo(prev=>upsertRegistroArquivo(prev,notaFinal,prods2,calcs2).next);
     }).catch(()=>{});
   },[xmlInput,ufOrigem,ufDestino,modoCalculo]);

@@ -64,6 +64,41 @@ describe("persistência de notas e histórico", () => {
     expect(await reaberto.load()).toEqual(historico);
   });
 
+  it("mantém uma única entrada ao reimportar a mesma NF-e, inclusive em lote", async () => {
+    navegadorSimulado();
+    const { HistoricoImportacaoService, mesclarHistorico } = await import("../HistoricoImportacaoService");
+    const entradas = ["ICMS_ST", "REDUCAO_BC", "DIFAL"].map((tributacao, i) => ({
+      id: i + 1,
+      nota: { chave: `NFe${String(i + 1).padStart(44, "0")}`, numero: String(i + 1) },
+      produtos: [{ tributacao }],
+      calculos: [{ tributacao }],
+      xml: `<NFe>${i + 1}</NFe>`,
+    }));
+    const reimportada = { ...entradas[0], id: 99, calculos: [{ tributacao: "ICMS_ST", revisado: true }] };
+    const historico = mesclarHistorico(entradas, [reimportada, entradas[1], reimportada]);
+    expect(historico).toHaveLength(3);
+    expect(historico[0].id).toBe(1);
+    expect(historico[0].calculos[0].revisado).toBe(true);
+    await HistoricoImportacaoService.save(historico);
+    vi.resetModules();
+    const { HistoricoImportacaoService: reaberto } = await import("../HistoricoImportacaoService");
+    expect(await reaberto.load()).toHaveLength(3);
+  });
+
+  it("remove duplicatas antigas sem confundir notas com mesmo número de emitentes distintos", async () => {
+    const { registros } = navegadorSimulado();
+    const nota = { emitente_cnpj: "12345678000199", numero: "10", serie: "1", data_emissao: "2026-10-16T10:00:00" };
+    registros.set("historico-importacao", [
+      { id: 1, nota, xml: "<NFe>original</NFe>" },
+      { id: 2, nota, xml: "<NFe>duplicada</NFe>" },
+      { id: 3, nota: { ...nota, emitente_cnpj: "98765432000100" }, xml: "<NFe>outra</NFe>" },
+    ]);
+    const { HistoricoImportacaoService } = await import("../HistoricoImportacaoService");
+    const historico = await HistoricoImportacaoService.load();
+    expect(historico.map(entrada => entrada.id)).toEqual([1, 3]);
+    expect(registros.get("historico-importacao").map(entrada => entrada.id)).toEqual([1, 3]);
+  });
+
   it("grava alterações rápidas na ordem e preserva a última versão", async () => {
     navegadorSimulado();
     const { ArquivoFiscalService } = await import("../ArquivoFiscalService");
