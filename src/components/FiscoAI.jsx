@@ -22,6 +22,7 @@ import { CongelamentoService } from "@/modules/fiscal/domain/services/Congelamen
 import MemoriaObsidian from "@/components/MemoriaObsidian";
 import CalculadoraFlutuante from "@/components/CalculadoraFlutuante";
 import { HistoricoApuracaoService } from "@/modules/fiscal/domain/services/HistoricoApuracaoService";
+import { HistoricoImportacaoService } from "@/modules/fiscal/domain/services/HistoricoImportacaoService";
 import { resolverPorReferenciaExterna } from "@/modules/fiscal/engines/resolverReferenciaExterna";
 import { parsearNFe } from "@/modules/xml/services/parsearNFe";
 
@@ -85,7 +86,7 @@ function upsertRegistroArquivo(arq, nota, produtos, calculos) {
     economia: calculos.reduce((s, c) => s + (c.economia || 0), 0),
   };
   const registro = {
-    id: nota.chave || `${nota.numero}-${nota.data_emissao}-${Date.now()}`,
+    id: nota.chave || [nota.emitente_cnpj, nota.numero, nota.serie, nota.data_emissao].filter(Boolean).join("-") || `nota-${Date.now()}`,
     chaveNFe: nota.chave || "",
     numero: nota.numero || "",
     serie: nota.serie || "",
@@ -3602,7 +3603,24 @@ export default function App(){
   const[modoUpload,setModoUpload]=useState("drag");
   const[modoCalculo]=useState("AUTO"); // A tributação é determinada a partir do XML e das regras fiscais.
   const[arquivo,setArquivo]=useState({});
-  useEffect(()=>{setArquivo(loadArquivo());},[]);
+  const arquivoCarregadoRef=useRef(null);
+  const historicoCarregadoRef=useRef(null);
+  const[dadosProntos,setDadosProntos]=useState(false);
+  const[erroPersistencia,setErroPersistencia]=useState(null);
+  useEffect(()=>{
+    let ativo=true;
+    Promise.all([loadArquivo(),HistoricoImportacaoService.load()])
+      .then(([arquivoSalvo,historicoSalvo])=>{
+        if(!ativo)return;
+        arquivoCarregadoRef.current=arquivoSalvo;
+        historicoCarregadoRef.current=historicoSalvo;
+        setArquivo(arquivoSalvo);
+        setHistorico(historicoSalvo);
+        setDadosProntos(true);
+      })
+      .catch(e=>{if(ativo)setErroPersistencia(`Não foi possível carregar os dados salvos: ${e?.message||e}`);});
+    return()=>{ativo=false;};
+  },[]);
   const[arqEmpresaSel,setArqEmpresaSel]=useState(null);
   const[arqMesSel,setArqMesSel]=useState(null);
   const[arqMsg,setArqMsg]=useState(null);
@@ -3632,7 +3650,14 @@ export default function App(){
     setConfirmMod(null);
   }, []);
 
-  useEffect(()=>{ saveArquivo(arquivo); },[arquivo]);
+  useEffect(()=>{
+    if(!dadosProntos||arquivo===arquivoCarregadoRef.current)return;
+    saveArquivo(arquivo).catch(e=>setErroPersistencia(`Arquivo Fiscal não foi salvo: ${e?.message||e}`));
+  },[arquivo,dadosProntos]);
+  useEffect(()=>{
+    if(!dadosProntos||historico===historicoCarregadoRef.current)return;
+    HistoricoImportacaoService.save(historico).catch(e=>setErroPersistencia(`Histórico não foi salvo: ${e?.message||e}`));
+  },[historico,dadosProntos]);
   const analisarRef=useRef(null);
 
   // Wrapper: aplica FCP configurado no produto (produto.seq) sobre o cálculo.
@@ -3735,6 +3760,7 @@ export default function App(){
     setLoteStatus({processando:true,total:files.length,ok:0,erro:0,empresas:new Set(),detalhes:[]});
     let arqAcc=arquivo;
     const novosHist=[];
+    const importados=[];
     const detalhes=[]; const empresas=new Set(); let ok=0, erro=0;
     for(const file of files){
       try{
@@ -3766,15 +3792,16 @@ export default function App(){
         }catch{/* memória é auxiliar */}
         const {next,key,mesAno}=upsertRegistroArquivo(arqAcc,notaFinal,prods,calcs);
         arqAcc=next; empresas.add(key); ok++;
+        importados.push({notaFinal,prods,calcs});
         novosHist.push({id:Date.now()+Math.random(),data:new Date().toLocaleString("pt-BR"),nota:notaFinal,produtos:prods,calculos:calcs,xml,modoCalculo,origem:"lote"});
         detalhes.push({arquivo:fileName,status:"ok",numero:notaFinal.numero,empresa:notaFinal.destinatario_nome||"—",mesAno});
       }catch(ex){
         erro++; detalhes.push({arquivo:fileName,status:"erro",motivo:ex.message||"Falha na leitura"});
       }
     }
-    setArquivo(arqAcc);
+    if(importados.length)setArquivo(prev=>importados.reduce((acc,{notaFinal,prods,calcs})=>upsertRegistroArquivo(acc,notaFinal,prods,calcs).next,prev));
     if(novosHist.length){
-      setHistorico(h=>[...novosHist,...h].slice(0,50));
+      setHistorico(h=>[...novosHist,...h]);
     }
     const resumo={processando:false,total:files.length,ok,erro,empresas:Array.from(empresas),detalhes};
     setLoteStatus(resumo);
@@ -3788,7 +3815,7 @@ export default function App(){
   // Não expõe dados para a internet; a API escuta apenas em 127.0.0.1.
   // ============================================================
   useEffect(()=>{
-    if(!window.fiscoaiDesktop?.isDesktop) return;
+    if(!dadosProntos||!window.fiscoaiDesktop?.isDesktop) return;
     window.__FISCOAI_AGENT__={
       importXmlBatch: async(files)=>{
         const result=await importarLote(files||[]);
@@ -3798,7 +3825,7 @@ export default function App(){
       exportFiscalPdfBase64: (empresa, mesAno, registros)=>exportarArquivoPDF(empresa, mesAno, registros, {returnBase64:true}),
     };
     return()=>{ try{ delete window.__FISCOAI_AGENT__; }catch{} };
-  },[importarLote]);
+  },[importarLote,dadosProntos]);
 
   // Handler unificado do DropZone (aceita 1 ou N arquivos)
   const handleFilesUpload=useCallback(async(files)=>{
@@ -3921,10 +3948,9 @@ export default function App(){
       });
       setHistApuracoes(HistoricoApuracaoService.listar());
     }catch{/* histórico é auxiliar */}
-    setHistorico(h=>{
-      const entry={id:Date.now(),data:new Date().toLocaleString("pt-BR"),nota:notaFinal,produtos:prods,calculos:calcs,xml,modoCalculo};
-      return [entry,...h].slice(0,20);
-    });
+    const histId=Date.now()+Math.random();
+    setHistorico(h=>[{id:histId,data:new Date().toLocaleString("pt-BR"),nota:notaFinal,produtos:prods,calculos:calcs,xml,modoCalculo},...h]);
+    setArquivo(prev=>upsertRegistroArquivo(prev,notaFinal,prods,calcs).next);
     // Etapa auxiliar: expande abreviações comerciais por IA e reanalisa
     // (a IA nunca decide o status — apenas alimenta a comparação textual).
     DescricaoIAService.preparar(p.map(pr=>pr.descricao)).then(()=>{
@@ -3932,6 +3958,8 @@ export default function App(){
       const prods2=prods.map(pr=>({...pr,analise:analisarProduto(pr,orig,dest)}));
       const calcs2=prods2.map(pr=>calcularProdComFCP(pr,orig,dest,modoCalculo));
       setProdutos(prods2); setCalculos(calcs2);
+      setHistorico(h=>h.map(entry=>entry.id===histId?{...entry,produtos:prods2,calculos:calcs2}:entry));
+      setArquivo(prev=>upsertRegistroArquivo(prev,notaFinal,prods2,calcs2).next);
     }).catch(()=>{});
   },[xmlInput,ufOrigem,ufDestino,modoCalculo]);
   useEffect(()=>{ analisarRef.current=analisar; },[analisar]);
@@ -3999,8 +4027,15 @@ export default function App(){
 
   const fmt=(v)=>"R$ "+parseFloat(v||0).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2});
 
+  if(!dadosProntos){
+    return <div style={{...S.app,display:"grid",placeItems:"center",padding:24,color:C.text}} role={erroPersistencia?"alert":"status"}>
+      {erroPersistencia||"Carregando notas e histórico salvos…"}
+    </div>;
+  }
+
   return(
     <div style={S.app} className="fisco-app">
+      {erroPersistencia&&<div role="alert" style={{...S.alert("error"),margin:12}}>{erroPersistencia} Não feche a página antes de resolver esta falha.</div>}
       {/* HEADER */}
       <header style={S.hdr}>
         <div style={{display:"flex",alignItems:"center",gap:12,minWidth:0}}>
