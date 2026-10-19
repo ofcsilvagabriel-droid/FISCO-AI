@@ -49,6 +49,8 @@ const numeroSeguro = (v) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 };
+export const valorTotalNFe = (nota) => numeroSeguro(nota?.totais_xml?.valor_total);
+export const valorTotalRegistroArquivo = (registro) => numeroSeguro(registro?.totaisXml?.valor_total ?? registro?.valorTotal);
 const arredondarCentavos = (v) => Math.round((numeroSeguro(v) + Number.EPSILON) * 100) / 100;
 function totaisAntecipacao(calculos = []) {
   return totaisAntecipacaoPura(calculos);
@@ -71,7 +73,7 @@ function upsertRegistroArquivo(arq, nota, produtos, calculos) {
   };
   const key = chaveEmpresa(dest.cnpj, dest.nome);
   const mesAno = mesAnoFromData(nota.data_emissao);
-  const valorTotal = produtos.reduce((s, p) => s + (p.valor_total || 0), 0);
+  const valorTotal = valorTotalNFe(nota);
   const antecipacao = totaisAntecipacao(calculos);
   const totais = {
     icmsProprio: calculos.reduce((s, c) => s + (c.valor_icms_proprio || 0), 0),
@@ -250,7 +252,7 @@ function exportarArquivoPDF(empresa, mesAno, registros, options = {}) {
 
   // Totais
   const tot = registros.reduce((s, r) => ({
-    valorTotal: s.valorTotal + (r.valorTotal || 0),
+    valorTotal: s.valorTotal + valorTotalRegistroArquivo(r),
     icmsProprio: s.icmsProprio + (r.totais?.icmsProprio || 0),
     icmsST: s.icmsST + (r.totais?.icmsST || 0),
     antecipacao: s.antecipacao + totaisAntecipacaoRegistro(r).bruto,
@@ -280,7 +282,7 @@ function exportarArquivoPDF(empresa, mesAno, registros, options = {}) {
       r.dataEmissao ? r.dataEmissao.slice(0, 10) : "—",
       r.emitenteNome || "—",
       `${r.ufOrigem || "?"} para ${r.ufDestino || "?"}`,
-      fmt(r.valorTotal),
+      fmt(valorTotalRegistroArquivo(r)),
       fmt(r.totais?.icmsProprio),
       fmt(r.totais?.icmsST),
       fmt(totaisAntecipacaoRegistro(r).bruto),
@@ -324,8 +326,8 @@ function exportarArquivoPDF(empresa, mesAno, registros, options = {}) {
         ["Número / Série", `${r.numero || "—"} / ${r.serie || "—"}`, "Emissão", r.dataEmissao ? r.dataEmissao.slice(0, 10) : "—"],
         ["Chave de acesso", (r.chaveNFe || "—").replace(/^NFe/, ""), "Natureza da operação", r.naturezaOperacao || "—"],
         ["Emitente", `${r.emitenteNome || "—"} (${formatCNPJ(r.emitenteCnpj)})`, "Destinatário", `${empresa.razaoSocial || "—"} (${formatCNPJ(empresa.cnpj)}) · IE ${r.destinatarioIe || empresa.ie || "ISENTO"}`],
-        ["UF origem para destino", `${r.ufOrigem || "?"} para ${r.ufDestino || "?"}`, "Valor total da NF-e", fmt(tx.valor_total || r.valorTotal)],
-        ["Valor dos produtos", fmt(tx.valor_produtos ?? r.valorTotal), "Descontos", fmt(tx.valor_desconto)],
+        ["UF origem para destino", `${r.ufOrigem || "?"} para ${r.ufDestino || "?"}`, "Valor total da NF-e", fmt(valorTotalRegistroArquivo(r))],
+        ["Valor dos produtos", fmt(tx.valor_produtos ?? r.produtos?.reduce((s,p)=>s+numeroSeguro(p.valor_total),0) ?? r.valorTotal), "Descontos", fmt(tx.valor_desconto)],
         ["Frete", fmt(tx.valor_frete ?? r.totais?.frete), "Seguro", fmt(tx.valor_seguro)],
         ["Outras despesas", fmt(tx.valor_outras_desp), "IPI", fmt(tx.valor_ipi ?? r.totais?.ipi)],
         ["ICMS próprio (XML)", fmt(tx.valor_icms), "ICMS-ST (XML)", fmt(tx.valor_icms_st)],
@@ -2181,7 +2183,7 @@ function exportarRelatorioPDF(nota, produtos, calculos) {
   const dataAtual = dNow.toLocaleDateString("pt-BR");
   const horaAtual = dNow.toLocaleTimeString("pt-BR");
 
-  const totalNF = produtos.reduce((s,p)=>s+(p.valor_total||0),0);
+  const totalNF = valorTotalNFe(nota);
   const totalICMSNF = produtos.reduce((s,p)=>s+numeroSeguro(p.xml?.valor_icms ?? p.valor_icms),0);
   const totalICMSCalc = calculos.reduce((s,c)=>s+(c.valor_icms_total||0),0);
   const totalICMSST = calculos.reduce((s,c)=>s+(c.tributacao==="ICMS_ST" ? (c.valor_icms_st||0) : 0),0);
@@ -4334,7 +4336,7 @@ export default function App(){
             {/* Resumo de totais */}
             <div style={{...S.statsGrid,gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",marginBottom:20}}>
               <Stat label="Total Produtos"      value={stats.total}                                                                                    col={C.blue}/>
-              <Stat label="Valor Total NF"      value={`R$ ${produtos.reduce((s,p)=>s+p.valor_total,0).toLocaleString("pt-BR",{minimumFractionDigits:2})}`} col={C.blue}/>
+              <Stat label="Valor Total NF"      value={fmt(valorTotalNFe(nota))} col={C.blue}/>
               <Stat label="ICMS na NF"          value={fmt(stats.totalICMSNF)}                           col={C.gray}  sub="original do XML"/>
               <Stat label="ICMS Calculado"      value={fmt(stats.totalICMSCalc)}                                                                       col={C.green} sub="após regras"/>
               <Stat label="ICMS-ST a Recolher"  value={fmt(stats.totalICMSST)}                                                                         col={C.blue}  sub="RICMS/BA"/>
@@ -4824,7 +4826,7 @@ export default function App(){
           const mesAtivo=arqMesSel&&meses.includes(arqMesSel)?arqMesSel:(meses[0]||null);
           const regsDoMes=empSel&&mesAtivo?empSel.registros.filter(r=>r.mesAno===mesAtivo).sort((a,b)=>(a.dataEmissao||"").localeCompare(b.dataEmissao||"")):[];
           const totaisMes=regsDoMes.reduce((s,r)=>({
-            valorTotal:s.valorTotal+(r.valorTotal||0),
+            valorTotal:s.valorTotal+valorTotalRegistroArquivo(r),
             icmsProprio:s.icmsProprio+(r.totais?.icmsProprio||0),
             icmsST:s.icmsST+(r.totais?.icmsST||0),
             antecipacao:s.antecipacao+totaisAntecipacaoRegistro(r).bruto,
@@ -4900,7 +4902,7 @@ export default function App(){
                                   <td style={{...S.td,whiteSpace:"nowrap"}}>{(r.dataEmissao||"").slice(0,10)}</td>
                                   <td style={{...S.td,fontSize:11,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.emitenteNome}</td>
                                   <td style={{...S.td,fontSize:11}}>{r.ufOrigem}→{r.ufDestino}</td>
-                                  <td style={{...S.td,whiteSpace:"nowrap",fontWeight:700,color:"#68d391"}}>{fmt(r.valorTotal)}</td>
+                                  <td style={{...S.td,whiteSpace:"nowrap",fontWeight:700,color:"#68d391"}}>{fmt(valorTotalRegistroArquivo(r))}</td>
                                   <td style={{...S.td,whiteSpace:"nowrap"}}>{fmt(r.totais?.icmsProprio)}</td>
                                   <td style={{...S.td,whiteSpace:"nowrap",color:"#63b3ed"}}>{fmt(r.totais?.icmsST)}</td>
                                   <td style={{...S.td,whiteSpace:"nowrap",color:"#f6ad55"}}>{fmt(totaisAntecipacaoRegistro(r).bruto)}</td>
