@@ -43,7 +43,7 @@ export function mesclarHistorico<T extends EntradaHistorico>(existentes: T[], no
 
 export const HistoricoImportacaoService = {
   async load(): Promise<EntradaHistorico[]> {
-    const dados = await carregarFiscal<EntradaHistorico[]>("historico-importacao", HISTORICO_KEY, []);
+    const dados = await carregarFiscal<EntradaHistorico[]>("historico-importacao", HISTORICO_KEY, [], (remoto, local) => mesclarHistorico(local, remoto));
     if (!Array.isArray(dados)) throw new Error("Histórico de importações salvo é inválido.");
     const semDuplicatas = mesclarHistorico(dados, []);
     if (semDuplicatas.length !== dados.length) await salvarFiscal("historico-importacao", HISTORICO_KEY, semDuplicatas);

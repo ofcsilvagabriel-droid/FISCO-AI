@@ -4,9 +4,25 @@ const ARQUIVO_KEY = "fiscoai:arquivo:v1";
 
 export type ArquivoFiscal = Record<string, unknown>;
 
+function mesclarArquivos(remoto: ArquivoFiscal, local: ArquivoFiscal): ArquivoFiscal {
+  if (!remoto || typeof remoto !== "object" || Array.isArray(remoto)) return local;
+  const combinado = { ...local, ...remoto };
+  for (const chave of Object.keys(local)) {
+    const empresaLocal = local[chave] as { registros?: Array<{ id?: unknown }> } | null;
+    const empresaRemota = remoto[chave] as { registros?: Array<{ id?: unknown }> } | null;
+    if (!Array.isArray(empresaLocal?.registros) || !Array.isArray(empresaRemota?.registros)) continue;
+    const idsRemotos = new Set(empresaRemota.registros.map(registro => registro.id).filter(id => id != null));
+    combinado[chave] = {
+      ...empresaLocal, ...empresaRemota,
+      registros: [...empresaRemota.registros, ...empresaLocal.registros.filter(registro => registro.id == null || !idsRemotos.has(registro.id))],
+    };
+  }
+  return combinado;
+}
+
 export const ArquivoFiscalService = {
   async load(): Promise<ArquivoFiscal> {
-    const dados = await carregarFiscal<ArquivoFiscal>("arquivo", ARQUIVO_KEY, {});
+    const dados = await carregarFiscal<ArquivoFiscal>("arquivo", ARQUIVO_KEY, {}, mesclarArquivos);
     if (!dados || typeof dados !== "object" || Array.isArray(dados)) throw new Error("Arquivo Fiscal salvo é inválido.");
     return dados;
   },

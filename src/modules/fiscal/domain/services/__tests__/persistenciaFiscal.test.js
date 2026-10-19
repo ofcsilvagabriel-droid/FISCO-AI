@@ -38,6 +38,7 @@ function navegadorSimulado() {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.doUnmock("../PersistenciaFiscalNuvem");
   vi.resetModules();
 });
 
@@ -117,5 +118,58 @@ describe("persistência de notas e histórico", () => {
     });
     const { ArquivoFiscalService } = await import("../ArquivoFiscalService");
     await expect(ArquivoFiscalService.save({ EMPRESA: { registros: [] } })).rejects.toThrow("quota excedida");
+  });
+
+  it("recupera Arquivo Fiscal e Histórico da nuvem quando o navegador perde o IndexedDB", async () => {
+    const { registros } = navegadorSimulado();
+    const remotos = new Map();
+    vi.doMock("../PersistenciaFiscalNuvem", () => ({
+      carregarDaNuvem: async tipo => remotos.get(tipo) || null,
+      salvarNaNuvem: async (tipo, dados, versao) => { remotos.set(tipo, { dados: structuredClone(dados), versao }); },
+    }));
+    const { ArquivoFiscalService } = await import("../ArquivoFiscalService");
+    const { HistoricoImportacaoService } = await import("../HistoricoImportacaoService");
+    const arquivo = { EMPRESA: { registros: [{ id: "nota-ST", produtos: [{ tributacao: "ICMS_ST" }] }] } };
+    const historico = [{ id: 1, nota: { chave: `NFe${"1".padStart(44, "0")}` }, xml: "<NFe/>" }];
+    await ArquivoFiscalService.save(arquivo);
+    await HistoricoImportacaoService.save(historico);
+    registros.clear();
+    vi.resetModules();
+    const { ArquivoFiscalService: arquivoReaberto } = await import("../ArquivoFiscalService");
+    const { HistoricoImportacaoService: historicoReaberto } = await import("../HistoricoImportacaoService");
+    expect(await arquivoReaberto.load()).toEqual(arquivo);
+    expect(await historicoReaberto.load()).toEqual(historico);
+  });
+
+  it("mescla registros antigos sem versão com a cópia já existente na nuvem", async () => {
+    const { registros } = navegadorSimulado();
+    registros.set("arquivo", { EMPRESA: { registros: [{ id: "local", numero: "1" }] } });
+    const remoto = { EMPRESA: { registros: [{ id: "remoto", numero: "2" }] } };
+    const remotos = new Map([["arquivo", { dados: remoto, versao: 123 }]]);
+    vi.doMock("../PersistenciaFiscalNuvem", () => ({
+      carregarDaNuvem: async tipo => remotos.get(tipo) || null,
+      salvarNaNuvem: async (tipo, dados, versao) => { remotos.set(tipo, { dados, versao }); },
+    }));
+    const { ArquivoFiscalService } = await import("../ArquivoFiscalService");
+    const dados = await ArquivoFiscalService.load();
+    expect(dados.EMPRESA.registros.map(registro => registro.id)).toEqual(["remoto", "local"]);
+    expect(remotos.get("arquivo").dados).toEqual(dados);
+  });
+
+  it("preserva o espelho local e impede sobrescrever a nuvem quando a leitura remota falha", async () => {
+    const { registros } = navegadorSimulado();
+    const antigo = { EMPRESA: { registros: [{ id: "antigo" }] } };
+    registros.set("arquivo", antigo);
+    vi.doMock("../PersistenciaFiscalNuvem", () => ({
+      carregarDaNuvem: async () => { throw new Error("sem conexão"); },
+      salvarNaNuvem: async () => { throw new Error("não deveria gravar"); },
+    }));
+    const { ArquivoFiscalService } = await import("../ArquivoFiscalService");
+    const { avisoSincronizacaoFiscal } = await import("../PersistenciaFiscalLocal");
+    expect(await ArquivoFiscalService.load()).toEqual(antigo);
+    expect(avisoSincronizacaoFiscal()).toContain("sem conexão");
+    const novo = { EMPRESA: { registros: [{ id: "antigo" }, { id: "novo" }] } };
+    await expect(ArquivoFiscalService.save(novo)).rejects.toThrow("versão na nuvem não foi verificada");
+    expect(registros.get("arquivo")).toEqual(novo);
   });
 });

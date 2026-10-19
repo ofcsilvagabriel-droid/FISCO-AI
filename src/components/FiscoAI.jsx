@@ -23,6 +23,8 @@ import MemoriaObsidian from "@/components/MemoriaObsidian";
 import CalculadoraFlutuante from "@/components/CalculadoraFlutuante";
 import { HistoricoApuracaoService } from "@/modules/fiscal/domain/services/HistoricoApuracaoService";
 import { HistoricoImportacaoService, identidadeImportacao, mesclarHistorico } from "@/modules/fiscal/domain/services/HistoricoImportacaoService";
+import { avisoSincronizacaoFiscal } from "@/modules/fiscal/domain/services/PersistenciaFiscalLocal";
+import { nuvemConfigurada, usuarioFiscal } from "@/modules/fiscal/domain/services/PersistenciaFiscalNuvem";
 import { resolverPorReferenciaExterna } from "@/modules/fiscal/engines/resolverReferenciaExterna";
 import { parsearNFe } from "@/modules/xml/services/parsearNFe";
 
@@ -3609,6 +3611,7 @@ export default function App(){
   const historicoCarregadoRef=useRef(null);
   const[dadosProntos,setDadosProntos]=useState(false);
   const[erroPersistencia,setErroPersistencia]=useState(null);
+  const[nuvemFiscal,setNuvemFiscal]=useState("verificando");
   useEffect(()=>{
     let ativo=true;
     Promise.all([loadArquivo(),HistoricoImportacaoService.load()])
@@ -3619,6 +3622,10 @@ export default function App(){
         setArquivo(arquivoSalvo);
         setHistorico(historicoSalvo);
         setDadosProntos(true);
+        if(avisoSincronizacaoFiscal())setErroPersistencia(avisoSincronizacaoFiscal());
+        if(!nuvemConfigurada())setNuvemFiscal("config");
+        else usuarioFiscal().then(id=>{if(ativo)setNuvemFiscal(id?"ativa":"login");})
+          .catch(e=>{if(ativo)setErroPersistencia(`Não foi possível verificar a cópia na nuvem: ${e?.message||e}`);});
       })
       .catch(e=>{if(ativo)setErroPersistencia(`Não foi possível carregar os dados salvos: ${e?.message||e}`);});
     return()=>{ativo=false;};
@@ -3654,11 +3661,11 @@ export default function App(){
 
   useEffect(()=>{
     if(!dadosProntos||arquivo===arquivoCarregadoRef.current)return;
-    saveArquivo(arquivo).catch(e=>setErroPersistencia(`Arquivo Fiscal não foi salvo: ${e?.message||e}`));
+    saveArquivo(arquivo).catch(e=>setErroPersistencia(`Arquivo Fiscal não foi sincronizado: ${e?.message||e}`));
   },[arquivo,dadosProntos]);
   useEffect(()=>{
     if(!dadosProntos||historico===historicoCarregadoRef.current)return;
-    HistoricoImportacaoService.save(historico).catch(e=>setErroPersistencia(`Histórico não foi salvo: ${e?.message||e}`));
+    HistoricoImportacaoService.save(historico).catch(e=>setErroPersistencia(`Histórico não foi sincronizado: ${e?.message||e}`));
   },[historico,dadosProntos]);
   const analisarRef=useRef(null);
 
@@ -4039,6 +4046,11 @@ export default function App(){
   return(
     <div style={S.app} className="fisco-app">
       {erroPersistencia&&<div role="alert" style={{...S.alert("error"),margin:12}}>{erroPersistencia} Não feche a página antes de resolver esta falha.</div>}
+      {!window.fiscoaiDesktop?.isDesktop&&nuvemFiscal==="login"&&<div role="status" style={{...S.alert("warn"),margin:12}}>
+        Arquivo Fiscal e Histórico estão apenas neste navegador. <a href="/auth" style={{color:"inherit",fontWeight:700,textDecoration:"underline"}}>Entre ou crie uma conta</a> para manter uma cópia no Supabase.
+      </div>}
+      {!window.fiscoaiDesktop?.isDesktop&&nuvemFiscal==="config"&&<div role="alert" style={{...S.alert("error"),margin:12}}>A cópia na nuvem está indisponível nesta publicação. Arquivo Fiscal e Histórico permanecem apenas neste navegador.</div>}
+      {!window.fiscoaiDesktop?.isDesktop&&nuvemFiscal==="ativa"&&!erroPersistencia&&<div role="status" style={{fontSize:11,color:C.muted,padding:"0 12px 4px"}}>☁️ Cópia na nuvem ativada para Arquivo Fiscal e Histórico.</div>}
       {/* HEADER */}
       <header style={S.hdr}>
         <div style={{display:"flex",alignItems:"center",gap:12,minWidth:0}}>
@@ -4396,6 +4408,7 @@ export default function App(){
                           const calcs=novos.map(pr=>calcularProdComFCP(pr,orig,dest,modoCalculo));
                           setCalculos(calcs);
                           if(nota){const {next}=upsertRegistroArquivo(arquivo,nota,novos,calcs);setArquivo(next);}
+                          if(nota){const identidade=identidadeImportacao({nota});setHistorico(h=>h.map(entry=>(identidade?identidadeImportacao(entry)===identidade:entry.nota===nota)?{...entry,produtos:novos,calculos:calcs}:entry));}
                           setArqMsg({tipo:"ok",txt:`${congeladosSel} produto(s) descongelado(s) — voltando ao cálculo automático.`});
                           setTimeout(()=>setArqMsg(null),4000);
                           return novos;
@@ -4551,6 +4564,8 @@ export default function App(){
                       if(nota){
                         const {next}=upsertRegistroArquivo(arquivo,nota,novos,calcs);
                         setArquivo(next);
+                        const identidade=identidadeImportacao({nota});
+                        setHistorico(h=>h.map(entry=>(identidade?identidadeImportacao(entry)===identidade:entry.nota===nota)?{...entry,produtos:novos,calculos:calcs}:entry));
                         setArqMsg({tipo:forcados>0?"erro":"ok",txt:`${seqs.size} produto(s) recalculado(s) como ${dm.modo}${fcpMsg}${forcados>0?` · ${forcados} com cálculo FORÇADO apesar de vedação de CST`:""} · decisão registrada na Memória Protegida.`});
                         setTimeout(()=>setArqMsg(null),7000);
                       }
