@@ -123,9 +123,9 @@ export function upsertRegistroArquivo(arq, nota, produtos, calculos) {
         // valores informados no XML (conferência XML × cálculo)
         xml: {
           ...p.xml,
-          base_icms: p.base_icms || 0,
-          aliquota_icms: p.aliquota_icms || 0,
-          valor_icms: p.valor_icms || 0,
+          base_icms: p.xml?.base_icms ?? p.base_icms ?? 0,
+          aliquota_icms: p.xml?.aliquota_icms ?? p.aliquota_icms ?? 0,
+          valor_icms: p.xml?.valor_icms ?? p.valor_icms ?? 0,
           base_icms_st: p.base_icms_st_xml || 0,
           valor_icms_st: p.valor_icms_st_xml || 0,
           aliquota_icms_st: p.aliquota_icms_st_xml || 0,
