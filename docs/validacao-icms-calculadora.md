@@ -27,7 +27,7 @@ Arquivos e funções alterados:
 | Arquivo | Funções/componentes | Alteração |
 |---|---|---|
 | `src/components/FiscoAI.jsx` | `getAliqInterestadual`, `analisarProduto`, `calcularICMSProduto`, `calcAntecipacaoParcial` | Alíquota do item e ICMS próprio coerentes; zero explícito preservado; destaque mantido na base já reduzida. |
-| Mesmo arquivo | `upsertRegistroArquivo`, `exportarArquivoPDF`, `exportarRelatorioPDF`, `CalcCard`, `App` | Dados originais separados dos apurados; base própria identificada; metadados persistidos; proteção contra respostas atrasadas; calculadora integrada. |
+| Mesmo arquivo | `upsertRegistroArquivo`, `CalcCard`, `App` | Dados originais separados dos apurados; base própria identificada; metadados persistidos; proteção contra respostas atrasadas; calculadora integrada. |
 | `src/modules/xml/services/parsearNFe.js` | `parsearNFe` | Snapshot do ICMS original e indicação de campos presentes, distinguindo ausência de zero. |
 | `src/modules/fiscal/domain/engines/IcmsProprioEngine.ts` | `resolverIcmsProprio` | Preservação do destaque, zero explícito e números finitos; compatibilidade com registros sem os marcadores novos. |
 | `src/modules/fiscal/data/aliquotasUF.js` | `calcularDIFAL` | Recebe a alíquota já resolvida para o item e preserva ICMS de origem zero informado. |

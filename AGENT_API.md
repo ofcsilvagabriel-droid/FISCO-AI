@@ -41,35 +41,19 @@ Localiza todos os XMLs da pasta e usa o mesmo fluxo de importação em lote do F
 
 Retorna o Arquivo Fiscal atualmente persistido no FiscoAI.
 
-`POST /agent/report/pdf`
-
-Gera o mesmo PDF consolidado usado pela tela Arquivo Fiscal e grava diretamente em uma pasta do Windows.
-
-Exemplo:
-
-```json
-{
-  "empresaKey": "12345678000100",
-  "competencia": "2026-08",
-  "outputDir": "D:\\Empresas\\Empresa A\\Relatorios"
-}
-```
-
 `POST /agent/run`
 
-Ação de alto nível disponível atualmente:
+Ação de importação de XML disponível:
 
 ```json
 {
-  "action": "import_and_report",
+  "action": "import",
   "folder": "D:\\Empresas\\Empresa A\\XML",
-  "outputDir": "D:\\Empresas\\Empresa A\\Relatorios",
-  "competencia": "2026-08",
   "recursive": true
 }
 ```
 
-Essa ação localiza os XMLs, importa pelo motor existente, lê o Arquivo Fiscal e gera um PDF por empresa/competência encontrada.
+Essa ação localiza os XMLs e os importa pelo motor existente. Os relatórios em PDF e CSV foram removidos.
 
 ## Autenticação
 

@@ -74,7 +74,7 @@ function pastaCompetenciaEmissao(dataEmissao: string | null | undefined): string
   return correspondencia ? `${correspondencia[1]}/${correspondencia[2]}` : "sem-competencia";
 }
 
-export function extrairEntradaInterestadual(xml: Buffer, schema: string, cnpjCertificado: string) {
+export function extrairNfeEntrada(xml: Buffer, schema: string, cnpjCertificado: string) {
   if (!/^procNFe/i.test(schema)) return null;
   const doc = new DOMParser().parseFromString(xml.toString("utf8"), "text/xml");
   if (!doc.documentElement || doc.documentElement.nodeName === "parsererror") return null;
@@ -95,7 +95,7 @@ export function extrairEntradaInterestadual(xml: Buffer, schema: string, cnpjCer
     || cnpjEmitente === cnpjDestinatario
     || !/^[A-Z]{2}$/.test(ufEmitente)
     || !/^[A-Z]{2}$/.test(ufDestinatario)
-    || ufEmitente === ufDestinatario) return null;
+  ) return null;
   return {
     numero_nfe: texto(ide || doc, "nNF"),
     serie_nfe: texto(ide || doc, "serie"),
@@ -146,7 +146,7 @@ export async function consultarDistribuicaoDfe(db: any, userId: string, cnpj: st
       for (const item of retorno.documentos) {
         if (!/^[0-9]{15}$/.test(item.nsu) || !item.base64 || !item.schema) throw new Error("Documento DF-e inválido no lote.");
         const xml = gunzipSync(Buffer.from(item.base64, "base64"), { maxOutputLength: LIMITE_XML });
-        const detalhesNfe = extrairEntradaInterestadual(xml, item.schema, cnpj);
+        const detalhesNfe = extrairNfeEntrada(xml, item.schema, cnpj);
         if (!detalhesNfe) { descartados++; continue; }
         const hash = createHash("sha256").update(xml).digest("hex");
         const documento = new DOMParser().parseFromString(xml.toString("utf8"), "text/xml");
@@ -159,7 +159,9 @@ export async function consultarDistribuicaoDfe(db: any, userId: string, cnpj: st
         if (arquivoErro) throw new Error(`Falha ao guardar XML recebido: ${arquivoErro.message}`);
         const { error: registroErro } = await db.from("fiscoai_dfe_documentos").upsert({
           user_id: userId, cnpj, nsu: item.nsu, schema_xml: item.schema,
-          chave_acesso: chave, sha256: hash, storage_path: path, processamento_status: "pendente", processamento_erro: null,
+          chave_acesso: chave, sha256: hash, storage_path: path,
+          processamento_status: detalhesNfe.uf_origem === detalhesNfe.uf_destino ? "interna" : "pendente",
+          processamento_erro: null,
           ...detalhesNfe,
         }, { onConflict: "user_id,cnpj,nsu,sha256", ignoreDuplicates: true });
         if (registroErro) throw new Error(`Falha ao indexar XML recebido: ${registroErro.message}`);

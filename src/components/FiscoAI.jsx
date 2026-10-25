@@ -1,6 +1,4 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
-import jsPDF from "jspdf";
-import autoTable from "jspdf-autotable";
 import { identificarST, calcularSTporPauta, calcularSTcomBeneficio, gerarRegraSugerida, normalizarTexto, classificarMatrizST, scoreCSTMatriz, CST_ST_FORTE as MST_CST_FORTE, CST_ST_FRACO as MST_CST_FRACO } from "@/modules/fiscal/engines/motorST";
 import { resolverPauta } from "@/modules/fiscal/engines/motorPauta";
 import { admitePauta, verificarSeTemPMC } from "@/modules/fiscal/engines/pmcDescritivo";
@@ -23,7 +21,6 @@ import MemoriaObsidian from "@/components/MemoriaObsidian";
 import CalculadoraFlutuante from "@/components/CalculadoraFlutuante";
 import PainelDfe from "@/components/dfe/PainelDfe";
 import PainelEmpresas from "@/components/empresas/PainelEmpresas";
-import PainelObrigacoes from "@/components/obrigacoes/PainelObrigacoes";
 import { listarCertificadosDfe } from "@/modules/dfe/services/certificados.functions";
 import { listarEmpresasFisco } from "@/modules/empresas/empresas.functions";
 import { HistoricoApuracaoService } from "@/modules/fiscal/domain/services/HistoricoApuracaoService";
@@ -232,209 +229,6 @@ function labelMesAno(ma) {
   const idx = parseInt(m, 10) - 1;
   if (!y || idx < 0 || idx > 11) return ma || "—";
   return `${meses[idx]}/${y}`;
-}
-
-// ============================================================
-// PDF CONSOLIDADO (jsPDF + autoTable)
-// ============================================================
-function exportarArquivoPDF(empresa, mesAno, registros, options = {}) {
-  const fmt = (v) => "R$ " + parseFloat(v || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
-  const W = doc.internal.pageSize.getWidth();
-
-  // Cabeçalho
-  doc.setFillColor(26, 54, 93);
-  doc.rect(0, 0, W, 70, "F");
-  doc.setTextColor(255, 255, 255);
-  doc.setFont("helvetica", "bold"); doc.setFontSize(16);
-  doc.text("Relatório Fiscal Consolidado — FiscoAI", 40, 30);
-  doc.setFont("helvetica", "normal"); doc.setFontSize(10);
-  doc.text(`Período: ${labelMesAno(mesAno)}   ·   Gerado em ${new Date().toLocaleString("pt-BR")}`, 40, 50);
-
-  // Empresa
-  doc.setTextColor(45, 55, 72);
-  doc.setFont("helvetica", "bold"); doc.setFontSize(12);
-  doc.text(empresa.razaoSocial || "—", 40, 95);
-  doc.setFont("helvetica", "normal"); doc.setFontSize(10);
-  const ieEmpresa = empresa.ie || registros.find(r => r.destinatarioIe)?.destinatarioIe || "";
-  doc.text(`CNPJ: ${formatCNPJ(empresa.cnpj)}   ·   Inscrição Estadual: ${ieEmpresa || "ISENTO / NÃO INFORMADA"}   ·   NF-e no período: ${registros.length}`, 40, 110);
-
-  // Totais
-  const tot = registros.reduce((s, r) => ({
-    valorTotal: s.valorTotal + valorTotalRegistroArquivo(r),
-    icmsProprio: s.icmsProprio + (r.totais?.icmsProprio || 0),
-    icmsST: s.icmsST + (r.totais?.icmsST || 0),
-    antecipacao: s.antecipacao + totaisAntecipacaoRegistro(r).bruto,
-    antecipacaoComReducao: s.antecipacaoComReducao + totaisAntecipacaoRegistro(r).comReducao,
-    difal: s.difal + (r.totais?.difal || 0),
-    ipi: s.ipi + (r.totais?.ipi || 0),
-    frete: s.frete + (r.totais?.frete || 0),
-    icmsCalcTotal: s.icmsCalcTotal + (r.totais?.icmsCalcTotal || 0),
-  }), { valorTotal:0, icmsProprio:0, icmsST:0, antecipacao:0, antecipacaoComReducao:0, difal:0, ipi:0, frete:0, icmsCalcTotal:0 });
-
-  autoTable(doc, {
-    startY: 125,
-    head: [["Valor Total NF-e", "ICMS Próprio", "ICMS-ST", "Antecipação bruta", `Antecipação c/ redução (${REDUCAO_ANTECIPACAO_PCT}%)`, "DIFAL", "IPI", "Frete", "ICMS Calc. Total"]],
-    body: [[fmt(tot.valorTotal), fmt(tot.icmsProprio), fmt(tot.icmsST), fmt(tot.antecipacao), fmt(tot.antecipacaoComReducao), fmt(tot.difal), fmt(tot.ipi), fmt(tot.frete), fmt(tot.icmsCalcTotal)]],
-    headStyles: { fillColor: [45, 55, 72], textColor: 255, fontSize: 9 },
-    bodyStyles: { fontSize: 10, fontStyle: "bold" },
-    margin: { left: 40, right: 40 },
-    theme: "grid",
-  });
-
-  // Tabela de NF-e
-  autoTable(doc, {
-    startY: doc.lastAutoTable.finalY + 18,
-    head: [["#", "NF", "Série", "Emissão", "Emitente", "UF", "Valor", "ICMS Próp.", "ICMS-ST", "Antec. bruta", "Antec. reduzida", "DIFAL"]],
-    body: registros.map((r, i) => [
-      i + 1, r.numero || "—", r.serie || "—",
-      r.dataEmissao ? r.dataEmissao.slice(0, 10) : "—",
-      r.emitenteNome || "—",
-      `${r.ufOrigem || "?"} para ${r.ufDestino || "?"}`,
-      fmt(valorTotalRegistroArquivo(r)),
-      fmt(r.totais?.icmsProprio),
-      fmt(r.totais?.icmsST),
-      fmt(totaisAntecipacaoRegistro(r).bruto),
-      fmt(totaisAntecipacaoRegistro(r).comReducao),
-      fmt(r.totais?.difal),
-    ]),
-    headStyles: { fillColor: [26, 54, 93], textColor: 255, fontSize: 9 },
-    bodyStyles: { fontSize: 8 },
-    margin: { left: 40, right: 40 },
-    theme: "striped",
-    didDrawPage: () => {
-      const pg = doc.internal.getNumberOfPages();
-      doc.setFontSize(8); doc.setTextColor(120);
-      doc.text(`FiscoAI · Relatório consolidado · Página ${pg}`, W - 40, doc.internal.pageSize.getHeight() - 15, { align: "right" });
-    },
-  });
-
-  // ============================================================
-  // Detalhamento por NF-e (1 página): dados gerais + tabela de itens.
-  // ============================================================
-  const pct = (v) => (v === null || v === undefined || v === "" ? "—" : `${parseFloat(v || 0).toFixed(2)}%`);
-  const rodape = () => {
-    const pg = doc.internal.getNumberOfPages();
-    doc.setFontSize(8); doc.setTextColor(120);
-    doc.text(`FiscoAI · Relatório consolidado · Página ${pg}`, W - 40, doc.internal.pageSize.getHeight() - 15, { align: "right" });
-  };
-
-  registros.forEach((r) => {
-    doc.addPage();
-    doc.setFillColor(26, 54, 93);
-    doc.rect(0, 0, W, 30, "F");
-    doc.setTextColor(255); doc.setFont("helvetica", "bold"); doc.setFontSize(11);
-    doc.text(`NF-e ${r.numero}/${r.serie || "—"}  ·  ${r.emitenteNome || ""}`, 40, 20);
-
-    const tx = r.totaisXml || {};
-    // --- Dados gerais da NF-e ---
-    autoTable(doc, {
-      startY: 40,
-      head: [["Dados gerais da NF-e", "", "", ""]],
-      body: [
-        ["Número / Série", `${r.numero || "—"} / ${r.serie || "—"}`, "Emissão", r.dataEmissao ? r.dataEmissao.slice(0, 10) : "—"],
-        ["Chave de acesso", (r.chaveNFe || "—").replace(/^NFe/, ""), "Natureza da operação", r.naturezaOperacao || "—"],
-        ["Emitente", `${r.emitenteNome || "—"} (${formatCNPJ(r.emitenteCnpj)})`, "Destinatário", `${empresa.razaoSocial || "—"} (${formatCNPJ(empresa.cnpj)}) · IE ${r.destinatarioIe || empresa.ie || "ISENTO"}`],
-        ["UF origem para destino", `${r.ufOrigem || "?"} para ${r.ufDestino || "?"}`, "Valor total da NF-e", fmt(valorTotalRegistroArquivo(r))],
-        ["Valor dos produtos", fmt(tx.valor_produtos ?? r.produtos?.reduce((s,p)=>s+numeroSeguro(p.valor_total),0) ?? r.valorTotal), "Descontos", fmt(tx.valor_desconto)],
-        ["Frete", fmt(tx.valor_frete ?? r.totais?.frete), "Seguro", fmt(tx.valor_seguro)],
-        ["Outras despesas", fmt(tx.valor_outras_desp), "IPI", fmt(tx.valor_ipi ?? r.totais?.ipi)],
-        ["ICMS próprio (XML)", fmt(tx.valor_icms), "ICMS-ST (XML)", fmt(tx.valor_icms_st)],
-        ["ICMS próprio (calculado)", fmt(r.totais?.icmsProprio), "ICMS-ST (calculado)", fmt(r.totais?.icmsST)],
-        ["Antecipação bruta / reduzida", `${fmt(totaisAntecipacaoRegistro(r).bruto)} / ${fmt(totaisAntecipacaoRegistro(r).comReducao)}`, "DIFAL (calculado)", fmt(r.totais?.difal)],
-        ["ICMS total calculado", fmt(r.totais?.icmsCalcTotal), "", ""],
-      ],
-      headStyles: { fillColor: [45, 55, 72], textColor: 255, fontSize: 7.5, cellPadding: 1.5 },
-      bodyStyles: { fontSize: 6.5, cellPadding: 1.2 },
-      columnStyles: { 0: { fontStyle: "bold", cellWidth: 110 }, 2: { fontStyle: "bold", cellWidth: 110 } },
-      margin: { left: 40, right: 40 },
-      theme: "grid",
-      didDrawPage: rodape,
-    });
-
-    // --- Itens da NF-e ---
-    autoTable(doc, {
-      startY: doc.lastAutoTable.finalY + 6,
-      head: [["Seq", "Código", "Descrição", "NCM", "CEST", "CFOP", "CST", "Qtd/Un", "Vl. Unit.", "Vl. Total", "Pauta", "Base", "Alíq.", "ICMS Próp.", "Base ST", "MVA", "FCP", "Tipo cálc.", "ST/Antec.", "Situação"]],
-      body: (r.produtos || []).map((p) => [
-        p.seq, (p.codigo || "—"), (p.descricao || "").slice(0, 42), p.ncm || "—", p.cest || "—",
-        p.cfop || "—", p.cst || "—",
-        `${(p.quantidade || 0)} ${p.unidade || ""}`.trim(),
-        fmt(p.valor_unitario), fmt(p.valor_total),
-        (p.metodo_pauta && p.metodo_pauta !== "MVA")
-          ? `${p.metodo_pauta} ${fmt(p.valor_pmc || p.valor_pauta_unitario)} para BC ${fmt(p.base_st)}`
-          : "—",
-        fmt(p.base_calculo_icms ?? p.base_calc) + (p.icms_proprio_presumido ? " (presum.)" : ""), pct(p.aliquota_icms_utilizada ?? p.aliquota_presumida ?? p.aliquota_aplicada),
-        fmt(p.valor_icms_proprio) + (p.icms_proprio_presumido ? " (presum.)" : ""),
-        p.base_st ? fmt(p.base_st) : "—",
-        p.mva ? pct(p.mva) + (p.tipo_calculo && p.tipo_calculo !== "Automático" ? " (man.)" : "") : "—",
-        p.fcp_percentual ? `${pct(p.fcp_percentual)} / ${fmt(p.valor_fcp)}` : "—",
-        (p.metodo_pauta && p.metodo_pauta !== "MVA" && (!p.tipo_calculo || p.tipo_calculo === "Automático"))
-          ? `Pauta (${p.metodo_pauta}) — individual` : (p.tipo_calculo || "Automático"),
-        fmt(p.valor_icms_st),
-        p.bloqueado ? "BLOQUEADO" : (p.revisao_manual ? "REVISAR" : (p.tributacao || "NORMAL")),
-      ]),
-      headStyles: { fillColor: [26, 54, 93], textColor: 255, fontSize: 6.5, cellPadding: 1.2 },
-      bodyStyles: { fontSize: 6, cellPadding: 1 },
-      margin: { left: 40, right: 40 },
-      theme: "striped",
-      didParseCell: (d) => {
-        if (d.section === "body" && d.column.index === 19) {
-          if (d.cell.raw === "BLOQUEADO") { d.cell.styles.textColor = [197, 48, 48]; d.cell.styles.fontStyle = "bold"; }
-          else if (d.cell.raw === "REVISAR") { d.cell.styles.textColor = [183, 121, 31]; d.cell.styles.fontStyle = "bold"; }
-        }
-      },
-      didDrawPage: rodape,
-    });
-
-    // --- Resumo de métodos de cálculo (pauta x automático x congelado) ---
-    const itens = r.produtos || [];
-    const porPauta = itens.filter((p) => p.metodo_pauta && p.metodo_pauta !== "MVA");
-    const congelados = itens.filter((p) => p.status_calculo_lock === "CONGELADO");
-    const automaticos = itens.filter((p) => !(p.metodo_pauta && p.metodo_pauta !== "MVA") && p.status_calculo_lock !== "CONGELADO");
-    const somaST = (lista) => lista.reduce((s, p) => s + (p.valor_icms_st || 0), 0);
-    autoTable(doc, {
-      startY: doc.lastAutoTable.finalY + 6,
-      head: [["Resumo de métodos de cálculo", "Itens", "ICMS-ST / Antecipação"]],
-      body: [
-        [`Calculados por PAUTA (PMC/PMPF informado no documento) — cálculo individual por produto: não reaproveita histórico; cada ocorrência é recalculada conforme o PMC/PMPF da NF`, String(porPauta.length), fmt(somaST(porPauta))],
-        [`Calculados por método AUTOMÁTICO (MVA / base normal)`, String(automaticos.length), fmt(somaST(automaticos))],
-        [`Cálculos CONGELADOS (decisão manual)`, String(congelados.length), fmt(somaST(congelados))],
-      ],
-      headStyles: { fillColor: [45, 55, 72], textColor: 255, fontSize: 7, cellPadding: 1.5 },
-      bodyStyles: { fontSize: 6.5, cellPadding: 1.2 },
-      columnStyles: { 0: { cellWidth: 320 }, 1: { halign: "center" }, 2: { halign: "right" } },
-      margin: { left: 40, right: 40 },
-      theme: "grid",
-      didDrawPage: rodape,
-    });
-
-    const infoComplementar = [r.infoComplementar, r.infoAdicionalFisco].filter(Boolean).join("\n\n");
-    autoTable(doc, {
-      startY: doc.lastAutoTable.finalY + 6,
-      head: [["Informações complementares"]],
-      body: [[doc.splitTextToSize(infoComplementar || "Sem informações complementares", W - 95)]],
-      headStyles: { fillColor: [45, 55, 72], textColor: 255, fontSize: 7, cellPadding: 1.5 },
-      bodyStyles: { fontSize: 6.5, cellPadding: 2, valign: "top" },
-      margin: { left: 40, right: 40 },
-      theme: "grid",
-      didDrawPage: rodape,
-    });
-  });
-
-  const cnpjStr = (empresa.cnpj || "sem-cnpj").replace(/\D/g, "") || "sem-cnpj";
-  if (options.returnBase64) {
-    const arrayBuffer = doc.output("arraybuffer");
-    const bytes = new Uint8Array(arrayBuffer);
-    let binary = "";
-    const chunk = 0x8000;
-    for (let i = 0; i < bytes.length; i += chunk) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-    }
-    return btoa(binary);
-  }
-  doc.save(`FiscoAI_${cnpjStr}_${mesAno}.pdf`);
-  return null;
 }
 
 // ============================================================
@@ -2140,467 +1934,6 @@ function calcularST(vProd, aliqInterna, mvaPercent, aliqInterestadual, frete=0, 
 // (mesmo comportamento, apenas movido para modularizar a arquitetura).
 
 // ============================================================
-// EXPORTAR CSV
-// ============================================================
-function exportarCSV(nota, produtos, calculos = []) {
-  const header = ["Seq","Código","Descrição","NCM","CEST","CFOP","Qtd","Valor Total","CST","Tributação","Fundamento Legal","Benefício","Status_Calculo","Motivo_Congelamento","Origem_Calculo","Versao_Apuracao_NCM","Tipo_Calculo","PMC_Encontrado","Valor_PMC","Fundamento_Pauta","ICMS_ST","Antecipacao_Bruta",`Antecipacao_Com_Reducao_${REDUCAO_ANTECIPACAO_PCT}pct`,"DIFAL"];
-  const rows = produtos.map((p,i) => {
-    const r = p.analise.filter(a=>a.tipo!=="NAO_ENCONTRADO");
-    const tipos = [...new Set(p.analise.map(a=>a.tipo))].join(" | ");
-    const funds = [...new Set(r.map(a=>a.fundamento))].join(" | ");
-    const ben = r.some(a=>a.beneficio) ? "SIM" : "NÃO";
-    const c = calculos[i] || {};
-    const congelado = !!(c._congelado || p.calculo_congelado?.ativo);
-    const origem = congelado ? "CONGELADO"
-      : c.memoria_apuracao?.origem_memoria === "ALTERADO_MANUAL" ? "MEMORIA_ALTERADA"
-      : c.memoria_apuracao?.origem_memoria === "CONGELADO_MANUAL_INALTERADO" ? "MEMORIA_CONGELADA"
-      : c.memoria_apuracao ? "MEMORIA_AUTOMATICA" : "AUTOMATICO";
-    const motivo = c._motivo_congelamento || p.calculo_congelado?.motivo || "";
-    const porPauta = !!(c.metodo_pauta && c.metodo_pauta !== "MVA");
-    const pmcDesc = verificarSeTemPMC(`${p.descricao||""} ${p.info_adicional||""}`);
-    const tipoCalculo = congelado ? "CONGELADO_MANUAL" : porPauta ? "PAUTA" : "AUTOMATICO";
-    return [p.seq,p.codigo,`"${p.descricao}"`,p.ncm,p.cest||"",p.cfop||"",p.quantidade,p.valor_total.toFixed(2),p.cst||"",tipos,`"${funds}"`,ben,
-      congelado?"CONGELADO":"AUTOMATICO",`"${motivo}"`,origem,c.memoria_apuracao?.versao_apuracao||"",
-      tipoCalculo, pmcDesc.temPMC?"SIM":"NÃO", pmcDesc.valorPMC ? pmcDesc.valorPMC.toFixed(2) : "",
-      `"${porPauta ? (c.fundamento_pauta||c.fundamento||"") : ""}"`,
-      numeroSeguro(c.valor_icms_st).toFixed(2),
-      (c.tributacao==="ANTECIPACAO"?numeroSeguro(c.valor_icms_st):0).toFixed(2),
-      (c.tributacao==="ANTECIPACAO"?arredondarCentavos(numeroSeguro(c.valor_icms_st)*(1-REDUCAO_ANTECIPACAO_PCT/100)):0).toFixed(2),
-      numeroSeguro(c.valor_difal).toFixed(2)].join(",");
-  });
-  const nf = nota ? `NF ${nota.numero} – ${nota.emitente_nome}` : "Análise Fiscal";
-  const csvContent = `FiscoAI – ${nf}\n\n`+header.join(",")+"\n"+rows.join("\n");
-  const blob = new Blob(["\uFEFF"+csvContent],{type:"text/csv;charset=utf-8"});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a"); a.href=url; a.download=`fiscalai_nf${nota?.numero||"_"}.csv`; a.click();
-  URL.revokeObjectURL(url);
-}
-
-// ============================================================
-// EXPORTAR PDF — RELATÓRIO TÉCNICO A4 PAISAGEM
-// ------------------------------------------------------------
-// Layout: A4 297×210 mm, paisagem, sem cortes, tabelas com
-// quebra automática e cabeçalho fixo. Contém cabeçalho fiscal,
-// resumo executivo, tabela de itens com todas as colunas
-// exigidas, memória por nota, painel de alertas e log técnico.
-// ============================================================
-function exportarRelatorioPDF(nota, produtos, calculos) {
-  const fmt = (v) => "R$ " + parseFloat(v||0).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2});
-  const fmtPct = (v) => parseFloat(v||0).toFixed(2).replace(".",",") + "%";
-  const esc = (s) => String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
-  const dNow = new Date();
-  const dataAtual = dNow.toLocaleDateString("pt-BR");
-  const horaAtual = dNow.toLocaleTimeString("pt-BR");
-
-  const totalNF = valorTotalNFe(nota);
-  const totalICMSNF = produtos.reduce((s,p)=>s+numeroSeguro(p.xml?.valor_icms ?? p.valor_icms),0);
-  const totalICMSCalc = calculos.reduce((s,c)=>s+(c.valor_icms_total||0),0);
-  const totalICMSST = calculos.reduce((s,c)=>s+(c.tributacao==="ICMS_ST" ? (c.valor_icms_st||0) : 0),0);
-  const antecipacao = totaisAntecipacao(calculos);
-  const totalAntecipacao = antecipacao.bruto;
-  const totalAntecipacaoComReducao = antecipacao.comReducao;
-  const totalDIFAL = calculos.reduce((s,c)=>s+(c.valor_difal||0),0);
-  const totalFCP = calculos.reduce((s,c)=>s+((c.valor_fcp||0)+(c.valor_fcp_st||0)),0);
-  const totalBeneficios = calculos.reduce((s,c)=>s+(c.economia||0),0);
-  const temPresuncaoICMSNF = calculos.some(c=>c.icms_foi_presumido||c.icms_proprio_presumido);
-
-  // Resumo executivo por classificação
-  const contarPor = (fn) => calculos.filter(fn).length;
-  const resumo = {
-    total: produtos.length,
-    comICMS: contarPor(c => (c.valor_icms_proprio||0) > 0),
-    isentas: contarPor(c => c.tributacao==="ISENCAO" || c.tributacao==="NAO_TRIBUTADO"),
-    st: contarPor(c => c.tributacao==="ICMS_ST" || c.tributacao==="ST_RETIDA_ANTERIOR"),
-    reducao: contarPor(c => c.tributacao==="REDUCAO_BC"),
-    diferimento: contarPor(c => c.tributacao==="DIFERIMENTO"),
-    erros: contarPor(c => c.tributacao==="NORMAL" && (c.valor_icms_proprio||0)===0 && (produtos[calculos.indexOf(c)]?.valor_icms||0)>0),
-    divergencia: contarPor(c => (c.alertas||[]).length > 0),
-  };
-
-  const chipColor = (t) => ({
-    ISENCAO:"#276749", NAO_TRIBUTADO:"#4a5568", SUSPENSAO:"#4a5568",
-    ST_RETIDA_ANTERIOR:"#2c5282", DIFERIMENTO:"#6b46c1",
-    REDUCAO_BC:"#744210", ICMS_ST:"#1a365d", ANTECIPACAO:"#975a16", DIFAL:"#2b6cb0",
-  }[t] || "#2d3748");
-  const chipLabel = (t) => ({
-    ISENCAO:"Isenção", NAO_TRIBUTADO:"Não Tributado", SUSPENSAO:"Suspensão",
-    ST_RETIDA_ANTERIOR:"ST Retida", DIFERIMENTO:"Diferimento",
-    REDUCAO_BC:"Redução BC", ICMS_ST:"ICMS-ST", ANTECIPACAO:"Antecipação", DIFAL:"DIFAL",
-  }[t] || "Normal");
-
-  // Linhas da tabela de itens (colunas conforme especificação)
-  const itensRows = produtos.map((p,i) => {
-    const c = calculos[i] || {};
-    const perm = p.permissoes_cst || c.permissoes_cst || {};
-    const percRed = c.percentual_reducao ? (c.percentual_reducao*100) : (c.fator_reducao ? (1-c.fator_reducao)*100 : 0);
-    const status = (c.alertas||[]).length > 0 ? "⚠ Revisar" : "OK";
-    const obs = [];
-    if (c.obs) obs.push(c.obs);
-    (c.alertas||[]).forEach(a => obs.push(`⚠ ${a.mensagem}`));
-    return `
-      <tr>
-        <td class="c">${p.seq}</td>
-        <td class="c mono">${esc(p.codigo||"")}</td>
-        <td class="l">${esc(p.descricao||"")}</td>
-        <td class="c mono">${esc(p.ncm||"")}</td>
-        <td class="c mono">${esc(p.cest||"")}</td>
-        <td class="c mono">${esc(p.cfop||"")}</td>
-        <td class="c mono">${esc(p.cst||"")}</td>
-        <td class="c mono">${esc(p.orig||"")}</td>
-        <td class="c"><span class="chip" style="background:${chipColor(c.tributacao)}">${chipLabel(c.tributacao)}</span></td>
-        <td class="l">${esc(c.beneficio_5291 ? `Conv. 52/91 (Anexo ${c.beneficio_5291.anexo})` : (c.tributacao==="ISENCAO"?"Isenção":(c.tributacao==="REDUCAO_BC"?"Redução BC":"—")))}</td>
-        <td class="l small">${esc(c.fundamento||"—")}</td>
-        <td class="r">${fmt(p.valor_total)}</td>
-        <td class="r">${percRed>0 ? fmtPct(percRed) : "—"}</td>
-        <td class="r">${fmt(c.base_calculo_icms ?? c.base_calc)}</td>
-        <td class="r">${c.mva_utilizada ? fmtPct(c.mva_utilizada) : "—"}</td>
-        <td class="r">${c.base_st ? fmt(c.base_st) : "—"}</td>
-        <td class="c">${c.aliq_interna ? fmtPct(c.aliq_interna) : "—"}</td>
-        <td class="c">${c.aliquota_aplicada ? fmtPct(c.aliquota_aplicada) : "—"}</td>
-        <td class="r">${fmt(c.valor_icms_proprio)}</td>
-        <td class="r">${c.tributacao==="ICMS_ST" ? fmt(c.valor_icms_st||0) : "—"}</td>
-        <td class="r">${c.valor_difal ? fmt(c.valor_difal) : "—"}</td>
-        <td class="r">${((c.valor_fcp||0)+(c.valor_fcp_st||0)) ? fmt((c.valor_fcp||0)+(c.valor_fcp_st||0)) : "—"}</td>
-        <td class="r">${c.tributacao==="ANTECIPACAO" ? fmt(c.valor_icms_st||0) : "—"}</td>
-        <td class="r bold">${fmt(c.valor_icms_total)}</td>
-        <td class="c small">${status}</td>
-        <td class="l small">${esc(obs.join(" · "))}</td>
-      </tr>`;
-  }).join("");
-
-  // ── Conferência item a item (NF x sistema) ──────────────────
-  const conferencias = produtos.map((p,i) => {
-    const c = calculos[i] || {};
-    const icmsNF = p.valor_icms || 0;
-    const icmsCalc = c.valor_icms_proprio || 0;
-    const delta = icmsCalc - icmsNF;
-    return { diverge: Math.abs(delta) > 0.01, icmsNF, icmsCalc, delta };
-  });
-  const qtdDivergencias = conferencias.filter(x=>x.diverge).length;
-
-  // ── Detalhe completo por item (o usuário não precisa abrir a NF) ──
-  const detalheItens = produtos.map((p,i) => {
-    const c = calculos[i] || {};
-    const perm = p.permissoes_cst || c.permissoes_cst || {};
-    const conf = conferencias[i];
-    const subtotal = (p.quantidade||0) * (p.valor_unitario||0);
-    const baseKandir = (p.valor_total||0) + (p.valor_frete||0) + (p.valor_seguro||0) + (p.valor_outras_desp||0) - (p.valor_desconto||0);
-    const etapas = c.etapas_calculo || [];
-    const linha = (l,v,extra="") => `<div class="drow"><span class="dl">${l}</span><span class="dv ${extra}">${v}</span></div>`;
-    return `
-      <div class="det">
-        <div class="det-h">
-          <div><b>ITEM ${p.seq}: ${esc(p.descricao||"—")}</b> <span class="mono muted">cód. ${esc(p.codigo||"—")}</span></div>
-          <span class="chip" style="background:${chipColor(c.tributacao)}">${chipLabel(c.tributacao)}</span>
-        </div>
-        <div class="det-cols">
-          <div class="det-col">
-            <div class="det-t">🏷️ Identificação</div>
-            ${linha("NCM", `<span class="mono">${esc(p.ncm||"—")}</span>`)}
-            ${linha("CEST", `<span class="mono">${esc(p.cest||"não aplicável")}</span>`)}
-            ${linha("CFOP", `<span class="mono">${esc(p.cfop||"—")}</span>`)}
-            ${linha("CST/CSOSN", `<span class="mono">${esc(p.cst||"—")}</span> — ${esc(perm.nome||"—")}`)}
-            ${linha("Origem da mercadoria", esc(p.orig||"—"))}
-            ${linha("GTIN/EAN", `<span class="mono">${esc(p.ean||p.cEAN||"SEM GTIN")}</span>`)}
-            ${linha("Quantidade", `${p.quantidade||0} ${esc(p.unidade||"un")}`)}
-          </div>
-          <div class="det-col">
-            <div class="det-t">💰 Valores</div>
-            ${linha("Valor unitário", fmt(p.valor_unitario))}
-            ${linha("Subtotal (qtd × unit.)", fmt(subtotal))}
-            ${linha("Valor total do item", fmt(p.valor_total))}
-            ${linha("Frete", fmt(p.valor_frete))}
-            ${linha("Seguro", fmt(p.valor_seguro))}
-            ${linha("Outras despesas", fmt(p.valor_outras_desp))}
-            ${linha("Desconto", `− ${fmt(p.valor_desconto)}`)}
-            ${linha("Base ICMS (LC 87/96)", fmt(baseKandir), "bold")}
-            ${linha("IPI (não integra a BC)", fmt(p.valor_ipi))}
-            ${p.pmc ? linha("PMC informado", fmt(p.pmc)) : ""}
-            ${p.pmpf ? linha("PMPF", fmt(p.pmpf)) : ""}
-          </div>
-          <div class="det-col">
-            <div class="det-t">🧮 Cálculo de ICMS</div>
-            ${linha("Tributação", chipLabel(c.tributacao))}
-            ${c._congelado
-              ? linha("Estado do cálculo", `<b>❄️ CONGELADO (manual)</b> — modo ${esc(c.decisao_manual?.modo||c.tributacao)}`, "bold")
-                + linha("Congelado por", `${esc(c._congelado_por||"—")} em ${c._congelado_em?new Date(c._congelado_em).toLocaleString("pt-BR"):"—"}`)
-                + linha("Motivo do congelamento", esc(c._motivo_congelamento||"—"))
-                + (c._parametros_congelados?.mva_informada!=null ? linha("MVA informada", fmtPct(c._parametros_congelados.mva_informada) + (c._parametros_congelados.mva_ja_ajustada?" (já ajustada)":" (ajuste automático)")) : "")
-                + (c._parametros_congelados?.presuncao_credito ? linha("Presunção de crédito", `Sim — ${fmtPct(c._parametros_congelados.presuncao_credito_aliq)}`) : "")
-              : c.memoria_apuracao
-                ? linha("Estado do cálculo", `💾 MEMÓRIA DE APURAÇÃO — v${esc(c.memoria_apuracao.versao_apuracao)} (${esc(c.memoria_apuracao.origem_memoria)})`)
-                  + (c.memoria_apuracao.nota_origem?.numero ? linha("Origem da memória", `Nota ${esc(c.memoria_apuracao.nota_origem.numero)} — ${esc(String(c.memoria_apuracao.nota_origem.data||"").slice(0,10))}`) : "")
-                  + (c.memoria_apuracao.alterado_em ? linha("Última alteração", `${new Date(c.memoria_apuracao.alterado_em).toLocaleString("pt-BR")} por ${esc(c.memoria_apuracao.alterado_por||"—")}`) : "")
-                : linha("Estado do cálculo", "⚙️ AUTOMÁTICO (sistema)")}
-            ${linha("Fundamento legal", esc(c.fundamento||"—"))}
-            ${c.icms_proprio_presumido
-              ? linha("ICMS Próprio (Presumido)", `${fmt(c.valor_icms_proprio)} · Alíquota ${fmtPct(c.aliquota_presumida||c.presuncao_credito_aliq||c.aliquota_aplicada)} (interestadual) · Base ${fmt(c.base_icms_presumida||c.base_calc)} — fundamento: ausência de destaque na NF; aplicado como ICMS próprio em ST/DIFAL/antecipação`, "bold")
-              : (c.valor_icms_proprio > 0 ? linha("ICMS próprio apurado", `${fmt(c.valor_icms_proprio)} · XML: ${fmt(p.xml?.valor_icms ?? p.valor_icms)}`) : "")}
-            ${c.beneficio_5291 ? linha("Benefício", `Conv. ICMS 52/91 · Anexo ${esc(c.beneficio_5291.anexo)} — carga ${fmtPct(c.beneficio_5291.carga_efetiva)}`) : ""}
-            ${c.percentual_reducao||c.fator_reducao ? linha("Redução de base", fmtPct(c.percentual_reducao ? c.percentual_reducao*100 : (1-c.fator_reducao)*100)) : ""}
-            ${linha("Base de cálculo aplicada", fmt(c.base_calc))}
-            ${c.aliq_interna ? linha("Alíquota interna (destino)", fmtPct(c.aliq_interna)) : ""}
-            ${c.aliquota_aplicada ? linha("Alíquota aplicada", fmtPct(c.aliquota_aplicada)) : ""}
-            ${c.mva_utilizada ? linha("MVA utilizada", fmtPct(c.mva_utilizada)) : ""}
-            ${c.base_st ? linha("Base ST", fmt(c.base_st)) : ""}
-            ${linha("ICMS próprio calculado", fmt(c.valor_icms_proprio))}
-            ${c.tributacao==="ICMS_ST" ? linha("ICMS-ST calculado", fmt(c.valor_icms_st)) : ""}
-            ${c.tributacao==="ANTECIPACAO" ? linha("Antecipação parcial", fmt(c.valor_icms_st)) : ""}
-            ${c.valor_difal ? linha("DIFAL", fmt(c.valor_difal)) : ""}
-            ${((c.valor_fcp||0)+(c.valor_fcp_st||0)) ? linha("FCP", fmt((c.valor_fcp||0)+(c.valor_fcp_st||0))) : ""}
-            ${linha("ICMS total do item", fmt(c.valor_icms_total), "bold")}
-            ${linha("ICMS destacado na NF", fmt(conf.icmsNF))}
-            ${linha("Conferência", conf.diverge
-              ? `<span class="tag-warn">⚠ Divergência de ${fmt(Math.abs(conf.delta))}</span>`
-              : `<span class="tag-ok">✓ Conferido (sem divergência)</span>`)}
-          </div>
-        </div>
-        ${etapas.length ? `
-          <div class="det-t" style="margin-top:6px">📐 Fórmulas aplicadas</div>
-          <table class="etapas">
-            <thead><tr><th>Etapa</th><th>Valor</th><th>Fórmula</th></tr></thead>
-            <tbody>${etapas.map(e=>`<tr><td>${esc(e.etapa)}</td><td class="r">${fmt(e.valor)}</td><td class="mono small">${esc(e.formula||"")}</td></tr>`).join("")}</tbody>
-          </table>` : ""}
-        ${(c.alertas||[]).length ? `<div class="avisos">${(c.alertas||[]).map(a=>`⚠️ <b>${esc(a.tipo)}</b>: ${esc(a.mensagem)}${a.fundamento?` <span class="muted">(${esc(a.fundamento)})</span>`:""}`).join("<br/>")}</div>` : ""}
-      </div>`;
-  }).join("");
-
-  // Memória de cálculo por item
-  const memoriaSecoes = produtos.map((p,i) => {
-    const c = calculos[i] || {};
-    const perm = p.permissoes_cst || c.permissoes_cst || {};
-    const etapas = c.etapas_calculo || [];
-    const conf = conferencias[i];
-    return `
-      <div class="mem-item">
-        <div class="mem-h">${p.seq}. ${esc(p.descricao||"")} <span class="mono muted">[NCM ${esc(p.ncm||"—")} · CST ${esc(p.cst||"—")}]</span></div>
-        <div class="mem-sub">
-          <b>CST:</b> ${esc(perm.codigo||"—")} — ${esc(perm.nome||"—")}<br/>
-          <b>Legislação:</b> ${esc(c.fundamento||"—")}<br/>
-          ${c.beneficio_5291 ? `<b>Convênio:</b> ICMS 52/91 · Anexo ${c.beneficio_5291.anexo} (${c.beneficio_5291.tipo}) — carga ${fmtPct(c.beneficio_5291.carga_efetiva)}<br/>` : ""}
-          <b>Tributação:</b> ${chipLabel(c.tributacao)} · <b>Conferência:</b> ${conf.diverge ? `⚠ divergência de ${fmt(Math.abs(conf.delta))}` : "✓ NF e sistema coincidem"}
-        </div>
-        ${etapas.length ? `
-          <table class="etapas">
-            <thead><tr><th>Etapa</th><th>Valor</th><th>Fórmula</th></tr></thead>
-            <tbody>${etapas.map(e=>`<tr><td>${esc(e.etapa)}</td><td class="r">${fmt(e.valor)}</td><td class="mono small">${esc(e.formula||"")}</td></tr>`).join("")}</tbody>
-          </table>` : ""}
-      </div>`;
-  }).join("");
-
-  // Painel de alertas
-  const todosAlertas = [];
-  calculos.forEach((c,i) => (c.alertas||[]).forEach(a => todosAlertas.push({...a, seq: produtos[i]?.seq, desc: produtos[i]?.descricao})));
-  const alertasHTML = todosAlertas.length ? `
-    <ul class="alertas">
-      ${todosAlertas.map(a=>`<li><b>[${esc(a.tipo)}]</b> Item ${esc(a.seq)} — ${esc(a.desc)}: ${esc(a.mensagem)}${a.fundamento?` <span class="muted">(${esc(a.fundamento)})</span>`:""}</li>`).join("")}
-    </ul>` : `<div class="muted">Nenhum alerta registrado.</div>`;
-
-  // Índice de legislação citada
-  const usa = (fn) => calculos.filter(fn).length;
-  const fundamentosCitados = [...new Set(calculos.map(c=>c.fundamento).filter(Boolean))];
-  const baseLegal = [
-    { norma:"Lei Complementar 87/1996 (Lei Kandir)", det:"Art. 13 — composição da base de cálculo do ICMS (produto + frete + seguro + outras despesas − desconto; IPI não integra a BC).", qtd: produtos.length },
-    { norma:"Decreto RICMS/BA 13.780/2012 — Anexo 1", det:"Relação de mercadorias sujeitas à substituição tributária e respectivas MVAs.", qtd: usa(c=>c.tributacao==="ICMS_ST"||c.tributacao==="ST_RETIDA_ANTERIOR") },
-    { norma:"RICMS/BA — Art. 12-A", det:"Antecipação parcial do ICMS nas entradas interestaduais.", qtd: usa(c=>c.tributacao==="ANTECIPACAO") },
-    { norma:"Convênio ICMS 52/91", det:"Redução de base de cálculo — máquinas industriais e implementos agrícolas.", qtd: usa(c=>!!c.beneficio_5291) },
-    { norma:"Convênio ICMS 142/18", det:"Regime de substituição tributária (inclusive autopeças).", qtd: usa(c=>/142\/18/.test(String(c.fundamento||""))) },
-    { norma:"Protocolos ICMS 41/08 e 97/10", det:"ST de peças, componentes e acessórios para veículos automotores.", qtd: usa(c=>/41\/08|97\/10/.test(String(c.fundamento||""))) },
-    { norma:"EC 87/2015 e LC 190/2022", det:"Diferencial de alíquotas (DIFAL) nas operações interestaduais.", qtd: usa(c=>(c.valor_difal||0)>0) },
-  ];
-  const baseLegalHTML = `
-    <table class="etapas">
-      <thead><tr><th>Norma</th><th>Aplicação</th><th class="c">Itens</th><th class="c">Situação</th></tr></thead>
-      <tbody>${baseLegal.map(b=>`<tr>
-        <td><b>${esc(b.norma)}</b></td>
-        <td class="small">${esc(b.det)}</td>
-        <td class="c">${b.qtd}</td>
-        <td class="c">${b.qtd>0?"Aplicada":"Não aplicável neste período"}</td>
-      </tr>`).join("")}</tbody>
-    </table>
-    ${fundamentosCitados.length ? `<div class="small" style="margin-top:6px"><b>Fundamentos citados pelo motor:</b> ${esc(fundamentosCitados.join(" · "))}</div>` : ""}`;
-
-  // Log técnico consolidado
-  const logHTML = calculos.map((c,i) => {
-    const linhas = c.log_tecnico || [];
-    if (!linhas.length) return "";
-    return `<div class="log-item"><div class="log-h">Item ${produtos[i]?.seq} · ${esc(produtos[i]?.descricao||"")}</div><pre>${esc(linhas.join("\n"))}</pre></div>`;
-  }).join("") || `<div class="muted">Sem eventos de log registrados.</div>`;
-
-
-  const html = `<!DOCTYPE html>
-<html lang="pt-BR"><head><meta charset="UTF-8"/>
-<title>Relatório Fiscal — FiscoAI</title>
-<style>
-  @page { size: A4 landscape; margin: 10mm; }
-  * { box-sizing: border-box; }
-  body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 10px; color:#1a202c; margin:0; padding:0; }
-  .hdr { display:flex; justify-content:space-between; align-items:flex-start; padding:8px 12px; border-bottom:3px solid #2b6cb0; margin-bottom:10px; }
-  .hdr h1 { margin:0; font-size:16px; color:#1a365d; letter-spacing:-0.02em; }
-  .hdr .sub { font-size:10px; color:#4a5568; }
-  .hdr .meta { text-align:right; font-size:9px; color:#4a5568; }
-  h2 { font-size:12px; color:#1a365d; margin:12px 0 6px; text-transform:uppercase; letter-spacing:0.04em; border-bottom:1px solid #cbd5e0; padding-bottom:3px; }
-  .grid { display:grid; grid-template-columns:repeat(6,1fr); gap:6px; font-size:9px; }
-  .cell { background:#f7fafc; border:1px solid #e2e8f0; border-radius:4px; padding:5px 7px; }
-  .cell .lbl { color:#718096; font-size:8px; text-transform:uppercase; letter-spacing:0.03em; }
-  .cell .val { color:#1a202c; font-weight:700; font-size:11px; margin-top:2px; }
-  table.itens { width:100%; border-collapse:collapse; font-size:8.5px; table-layout:auto; }
-  table.itens thead { display:table-header-group; }
-  table.itens th { background:#2b6cb0; color:#fff; padding:5px 4px; border:1px solid #2b6cb0; font-size:8px; text-align:center; }
-  table.itens td { padding:4px 4px; border:1px solid #e2e8f0; vertical-align:top; word-wrap:break-word; }
-  table.itens tbody tr:nth-child(even) td { background:#f8fafc; }
-  .c { text-align:center; } .r { text-align:right; } .l { text-align:left; }
-  .mono { font-family: 'Courier New', monospace; font-size:8px; }
-  .small { font-size:8px; color:#4a5568; }
-  .muted { color:#a0aec0; }
-  .bold { font-weight:700; color:#276749; }
-  .chip { color:#fff; padding:1px 5px; border-radius:8px; font-size:7.5px; font-weight:700; white-space:nowrap; }
-  .mem-item { margin-bottom:10px; padding:8px 10px; border:1px solid #e2e8f0; border-radius:5px; background:#f8fafc; page-break-inside:avoid; }
-  .mem-h { font-weight:700; color:#1a365d; font-size:10px; margin-bottom:3px; }
-  .mem-sub { font-size:9px; color:#4a5568; margin-bottom:5px; line-height:1.5; }
-  table.etapas { width:100%; border-collapse:collapse; font-size:8.5px; margin-top:4px; }
-  table.etapas th { background:#edf2f7; padding:3px 5px; border:1px solid #cbd5e0; text-align:left; }
-  table.etapas td { padding:3px 5px; border:1px solid #e2e8f0; }
-  ul.alertas { margin:0; padding-left:16px; font-size:9px; color:#7b341e; }
-  ul.alertas li { margin-bottom:3px; }
-  .log-item { margin-bottom:6px; page-break-inside:avoid; }
-  .log-h { font-weight:700; color:#2d3748; font-size:9px; }
-  .log-item pre { margin:2px 0; padding:5px 7px; background:#1a202c; color:#e2e8f0; font-size:8.5px; border-radius:4px; white-space:pre-wrap; font-family:'Courier New',monospace; }
-  .pb { page-break-before: always; }
-  .foot { position:fixed; bottom:5mm; left:10mm; right:10mm; font-size:8px; color:#718096; border-top:1px solid #e2e8f0; padding-top:3px; display:flex; justify-content:space-between; }
-  .det { border:1px solid #cbd5e0; border-radius:6px; margin-bottom:8px; page-break-inside:avoid; overflow:hidden; }
-  .det-h { display:flex; justify-content:space-between; align-items:center; background:#edf2f7; padding:5px 8px; font-size:10px; color:#1a365d; }
-  .det-cols { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; padding:7px 8px; }
-  .det-col { border-right:1px solid #edf2f7; padding-right:8px; }
-  .det-col:last-child { border-right:none; }
-  .det-t { font-size:9px; font-weight:700; color:#2b6cb0; text-transform:uppercase; letter-spacing:0.03em; margin-bottom:3px; }
-  .drow { display:flex; justify-content:space-between; gap:6px; font-size:8.5px; padding:1.5px 0; border-bottom:1px dotted #edf2f7; }
-  .dl { color:#718096; } .dv { color:#1a202c; text-align:right; }
-  .tag-ok { color:#276749; font-weight:700; }
-  .tag-warn { color:#9b2c2c; font-weight:700; }
-  .avisos { background:#fffaf0; border-top:1px solid #fbd38d; padding:5px 8px; font-size:8.5px; color:#7b341e; }
-  .info-complementar { white-space:pre-wrap; background:#f8fafc; border:1px solid #e2e8f0; border-radius:4px; padding:7px; font-size:9px; line-height:1.45; }
-  @media print { .no-print { display:none !important; } }
-</style></head>
-<body>
-
-<!-- CABEÇALHO -->
-<div class="hdr">
-  <div>
-    <h1>⚖️ FiscoAI — Relatório Técnico Fiscal</h1>
-    <div class="sub">Análise de ICMS · Substituição Tributária · Antecipação · DIFAL · Benefícios Fiscais</div>
-  </div>
-  <div class="meta">
-    <div><b>Data:</b> ${dataAtual} · <b>Hora:</b> ${horaAtual}</div>
-    <div>RICMS/BA · Conv. ICMS 52/91 · 101/97 · 142/18 · Prot. 41/08-97/10</div>
-  </div>
-</div>
-
-<!-- DADOS DA EMPRESA / NF -->
-<h2>📄 Cabeçalho Fiscal</h2>
-<div class="grid">
-  <div class="cell"><div class="lbl">Empresa (Emitente)</div><div class="val">${esc(nota?.emitente_nome||"—")}</div></div>
-  <div class="cell"><div class="lbl">CNPJ</div><div class="val mono">${esc(nota?.emitente_cnpj||"—")}</div></div>
-  <div class="cell"><div class="lbl">Destinatário</div><div class="val">${esc(nota?.destinatario_nome||"—")}</div></div>
-  <div class="cell"><div class="lbl">CNPJ Destinatário</div><div class="val mono">${esc(nota?.destinatario_cnpj||"—")}</div></div>
-  <div class="cell"><div class="lbl">IE Destinatário</div><div class="val mono">${esc(nota?.destinatario_ie||"ISENTO / NÃO INFORMADA")}</div></div>
-  <div class="cell"><div class="lbl">Competência</div><div class="val">${esc((nota?.data_emissao||"").substring(0,7)||"—")}</div></div>
-  <div class="cell"><div class="lbl">UF Origem → Destino</div><div class="val">${esc(nota?.uf_origem||"—")} → ${esc(nota?.uf_destino||"—")}</div></div>
-  <div class="cell"><div class="lbl">NF-e (Nº/Série)</div><div class="val">${esc(nota?.numero||"—")}/${esc(nota?.serie||"—")}</div></div>
-  <div class="cell"><div class="lbl">Chave</div><div class="val mono small">${esc((nota?.chave||"").replace(/^NFe/,""))}</div></div>
-  <div class="cell"><div class="lbl">Natureza</div><div class="val small">${esc(nota?.natureza_operacao||"—")}</div></div>
-  <div class="cell"><div class="lbl">Qtd Itens</div><div class="val">${produtos.length}</div></div>
-  <div class="cell"><div class="lbl">Valor Total NF</div><div class="val">${fmt(totalNF)}</div></div>
-  <div class="cell"><div class="lbl">Total ICMS</div><div class="val">${fmt(totalICMSCalc)}</div></div>
-  <div class="cell"><div class="lbl">Total ST</div><div class="val">${fmt(totalICMSST)}</div></div>
-  <div class="cell"><div class="lbl">Total DIFAL</div><div class="val">${fmt(totalDIFAL)}</div></div>
-  <div class="cell"><div class="lbl">Total Antecipação bruta</div><div class="val">${fmt(totalAntecipacao)}</div></div>
-  <div class="cell"><div class="lbl">Total Antecipação c/ redução (${REDUCAO_ANTECIPACAO_PCT}%)</div><div class="val">${fmt(totalAntecipacaoComReducao)}</div></div>
-  <div class="cell"><div class="lbl">Total FCP</div><div class="val">${fmt(totalFCP)}</div></div>
-  <div class="cell"><div class="lbl">Total Benefícios</div><div class="val">${fmt(totalBeneficios)}</div></div>
-</div>
-
-<h2>Informações complementares</h2>
-<div class="info-complementar">${esc([nota?.info_complementar, nota?.info_adicional_fisco].filter(Boolean).join("\n\n") || "Sem informações complementares")}</div>
-
-<!-- RESUMO EXECUTIVO -->
-<h2>📊 Resumo Executivo</h2>
-<div class="grid" style="grid-template-columns:repeat(8,1fr)">
-  <div class="cell"><div class="lbl">Total Itens</div><div class="val">${resumo.total}</div></div>
-  <div class="cell"><div class="lbl">Com ICMS</div><div class="val">${resumo.comICMS}</div></div>
-  <div class="cell"><div class="lbl">Isentas / N.Trib.</div><div class="val">${resumo.isentas}</div></div>
-  <div class="cell"><div class="lbl">Com ST</div><div class="val">${resumo.st}</div></div>
-  <div class="cell"><div class="lbl">Com Redução</div><div class="val">${resumo.reducao}</div></div>
-  <div class="cell"><div class="lbl">Diferimento</div><div class="val">${resumo.diferimento}</div></div>
-  <div class="cell"><div class="lbl">Divergências</div><div class="val">${qtdDivergencias}</div></div>
-  <div class="cell"><div class="lbl">Erros</div><div class="val">${resumo.erros}</div></div>
-</div>
-<div class="small" style="margin-top:5px">
-  ${qtdDivergencias
-    ? `<span class="tag-warn">⚠ ${qtdDivergencias} item(ns) com diferença entre o ICMS destacado na NF-e e o ICMS recalculado — detalhamento na seção "Detalhe Completo por Item".</span>`
-    : `<span class="tag-ok">✓ Todos os itens conferem com o ICMS destacado na NF-e.</span>`}
-</div>
-
-<!-- TABELA CONSOLIDADA -->
-<h2>📋 Tabela Consolidada — Itens da NF-e</h2>
-<table class="itens">
-  <thead><tr>
-    <th>Seq</th><th>Código</th><th>Descrição</th><th>NCM</th><th>CEST</th><th>CFOP</th><th>CST</th><th>Orig</th>
-    <th>Tributação</th><th>Benefício</th><th>Legislação</th>
-    <th>Base Orig.</th><th>% Red.</th><th>Base c/ Red.</th><th>MVA</th><th>Base ST</th>
-    <th>Alíq. Int.</th><th>Alíq. Inter.</th>
-    <th>ICMS Próprio</th><th>ICMS-ST</th><th>DIFAL</th><th>FCP</th><th>Antecipação</th>
-    <th>Total Item</th><th>Status</th><th>Observações</th>
-  </tr></thead>
-  <tbody>${itensRows}</tbody>
-</table>
-
-<!-- DETALHE COMPLETO POR ITEM -->
-<div class="pb"></div>
-<h2>🔍 Detalhe Completo por Item — Conferência sem abrir a NF-e</h2>
-${detalheItens}
-
-<!-- MEMÓRIA DE CÁLCULO -->
-<div class="pb"></div>
-<h2>🧮 Memória de Cálculo</h2>
-${memoriaSecoes}
-
-<!-- PAINEL DE ALERTAS -->
-<div class="pb"></div>
-<h2>⚠️ Painel de Alertas</h2>
-${alertasHTML}
-
-<!-- LOG TÉCNICO -->
-<h2>📋 Log Técnico do Motor</h2>
-${logHTML}
-
-<!-- ÍNDICE DE LEGISLAÇÃO -->
-<div class="pb"></div>
-<h2>📚 Índice de Legislação Citada</h2>
-${baseLegalHTML}
-
-<div class="foot">
-  <span>FiscoAI · Relatório Técnico Fiscal · Legislações: RICMS/BA Dec. 13.780/12 · Conv. ICMS 52/91 · 101/97 · 142/18 · Prot. 41/08 e 97/10 · EC 87/2015 · LC 190/22</span>
-  <span>Gerado em ${dataAtual} ${horaAtual}</span>
-</div>
-
-<div class="no-print" style="text-align:center;margin:20px 0">
-  <button onclick="window.print()" style="padding:10px 28px;background:#2b6cb0;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer">🖨️ Imprimir / Salvar PDF</button>
-</div>
-
-</body></html>`;
-
-  const blob = new Blob([html], {type:"text/html;charset=utf-8"});
-  const url = URL.createObjectURL(blob);
-  const w = window.open(url, "_blank");
-  if (w) {
-    w.addEventListener("load", () => {
-      setTimeout(() => { w.focus(); w.print(); }, 500);
-    });
-  }
-}
-
-// ============================================================
 // XML EXEMPLO
 // ============================================================
 const XML_EXEMPLO = `<?xml version="1.0" encoding="UTF-8"?>
@@ -3930,7 +3263,6 @@ export default function App(){
         return result;
       },
       getArchive: ()=>loadArquivo(),
-      exportFiscalPdfBase64: (empresa, mesAno, registros)=>exportarArquivoPDF(empresa, mesAno, registros, {returnBase64:true}),
     };
     return()=>{ try{ delete window.__FISCOAI_AGENT__; }catch{} };
   },[importarLote,dadosProntos]);
@@ -4126,8 +3458,7 @@ export default function App(){
   const TABS=[
     {id:"importar",icon:"📂",label:"Importar NF-e"},
     {id:"empresas",icon:"🏢",label:"Empresas"},
-    {id:"obrigacoes",icon:"📅",label:"Controle mensal ICMS"},
-    {id:"dfe",icon:"📥",label:"NF-e de entrada"},
+    {id:"dfe",icon:"📥",label:"Central de XMLs"},
     {id:"danfe",icon:"📥",label:"Consultar DANFE"},
     {id:"analise",icon:"🔍",label:"Análise Fiscal",disabled:!analisado},
     {id:"calculo",icon:"🧾",label:"Cálculo ICMS",disabled:!analisado},
@@ -4172,9 +3503,7 @@ export default function App(){
         </div>
         <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",justifyContent:"flex-end"}}>
           {analisado&&<span style={{...S.badge,background:`rgba(${C.green},0.12)`,color:`rgb(${C.green})`,borderColor:`rgba(${C.green},0.3)`}}>{produtos.length} produtos</span>}
-          {analisado&&<button style={S.btn("pdf")} onClick={()=>exportarRelatorioPDF(nota,produtos,calculosVisiveis)}>📄 PDF</button>}
           {analisado&&<button style={S.btn("primary")} onClick={salvarNoArquivo}>💾 Salvar</button>}
-          {analisado&&<button style={S.btn("success")} onClick={()=>exportarCSV(nota,produtos,calculosVisiveis)}>⬇️ CSV</button>}
           {analisado&&<button style={S.btn("ghost")} onClick={reset}>🔄 Nova</button>}
           {!window.fiscoaiDesktop?.isDesktop&&nuvemFiscal==="ativa"&&<button style={S.btn("ghost")} onClick={async()=>{
             const {error}=await supabase.auth.signOut({scope:"local"});
@@ -4206,17 +3535,12 @@ export default function App(){
         <main style={S.main} className="animate-fadeIn" key={tab}>
 
         {tab==="dfe"&&(nuvemFiscal==="ativa"
-          ? <PainelDfe S={S} C={C} onImport={importarLote}/>
+          ? <PainelDfe S={S} C={C} onImport={importarLote} onNavigate={setTab}/>
           : <div style={S.card}>Entre na sua conta para cadastrar certificados e buscar XMLs com segurança. <a href="/auth">Abrir login</a></div>)}
 
         {tab==="empresas"&&(nuvemFiscal==="ativa"
           ? <PainelEmpresas S={S} C={C} arquivo={arquivo} historico={historico} memoria={histApuracoes} onNavigate={setTab} onEmpresasChange={atualizarEmpresasCadastro}/>
           : <div style={S.card}>Entre na sua conta para cadastrar empresas, acessos SEFAZ e certificados com segurança. <a href="/auth">Abrir login</a></div>)}
-
-        {tab==="obrigacoes"&&(nuvemFiscal==="ativa"
-          ? <PainelObrigacoes S={S} C={C}/>
-          : <div style={S.card}>Entre na sua conta para manter o controle mensal de ICMS sincronizado com segurança. <a href="/auth">Abrir login</a></div>)}
-
 
         {/* ═══════════ IMPORTAR ═══════════ */}
         {tab==="importar"&&(
@@ -4484,19 +3808,7 @@ export default function App(){
             {/* Alerta informativo */}
             <div style={{...S.alert("warn"),marginBottom:16}}>
               ℹ️ Os valores abaixo foram calculados automaticamente com base nas regras fiscais identificadas na análise. Alíquota interna BA: <strong>20,5%</strong>. Verifique sempre com a legislação vigente antes de emitir documentos fiscais.
-            </div>
-
-            {/* Botão exportar PDF */}
-            <div style={{display:"flex",justifyContent:"flex-end",marginBottom:16,gap:8}}>
-              <button style={S.btn("pdf")} onClick={()=>exportarRelatorioPDF(nota,produtos,calculosVisiveis)}>
-                📄 Exportar Relatório PDF
-              </button>
-              <button style={S.btn("success")} onClick={()=>exportarCSV(nota,produtos,calculosVisiveis)}>
-                ⬇️ Exportar CSV
-              </button>
-            </div>
-
-            {/* Barra de recálculo manual (seleção múltipla) */}
+            </div>            {/* Barra de recálculo manual (seleção múltipla) */}
             <div style={{...S.card,marginBottom:12,padding:"12px 14px",display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
               <strong style={{fontSize:12,color:C.text}}>🛠️ Recalcular manualmente</strong>
               <span style={{fontSize:11,color:C.muted}}>{selCalc.size} produto(s) selecionado(s)</span>
@@ -4942,8 +4254,6 @@ export default function App(){
                     </div>
                     <div style={{marginTop:14,display:"flex",gap:8}}>
                       <button style={S.btn("primary")} onClick={()=>carregarDoHistorico(h)}>🧾 Ver Cálculo ICMS</button>
-                      <button style={S.btn("pdf")} onClick={()=>exportarRelatorioPDF(h.nota,h.produtos,calcs)}>📄 Exportar PDF</button>
-                      <button style={S.btn("success")} onClick={()=>exportarCSV(h.nota,h.produtos)}>⬇️ Exportar CSV</button>
                     </div>
                   </div>
                 );
@@ -5053,9 +4363,6 @@ export default function App(){
                               ))}
                             </tbody>
                           </table>
-                        </div>
-                        <div style={{marginTop:14,display:"flex",gap:8,flexWrap:"wrap"}}>
-                          <button style={S.btn("pdf")} onClick={()=>exportarArquivoPDF(empSel,mesAtivo,regsDoMes)}>📄 Exportar PDF Consolidado</button>
                         </div>
                       </>
                     )}

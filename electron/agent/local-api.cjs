@@ -163,56 +163,17 @@ function createLocalAgentApi({ getMainWindow, getPort, port }) {
         return sendJson(res, 200, { ok: true, archive });
       }
 
-      if (url.pathname === '/agent/report/pdf' && req.method === 'POST') {
-        const body = await readJson(req);
-        const outputDir = safePath(body.outputDir);
-        if (!outputDir) return sendJson(res, 400, { ok: false, error: 'outputDir é obrigatório.' });
-        await fsp.mkdir(outputDir, { recursive: true });
-        const archive = await invokeRenderer('getArchive');
-        const empresaKey = String(body.empresaKey || '');
-        const competencia = String(body.competencia || '');
-        const empresa = archive?.[empresaKey];
-        if (!empresa) return sendJson(res, 404, { ok: false, error: 'Empresa não encontrada no Arquivo Fiscal.' });
-        const registros = (empresa.registros || []).filter((r) => !competencia || r.mesAno === competencia);
-        if (!registros.length) return sendJson(res, 404, { ok: false, error: 'Não há registros para a competência informada.' });
-        const base64 = await invokeRenderer('exportFiscalPdfBase64', [empresa, competencia || registros[0].mesAno, registros]);
-        const cnpj = String(empresa.cnpj || empresaKey || 'sem-cnpj').replace(/\D/g, '') || 'sem-cnpj';
-        const filename = String(body.filename || `FiscoAI_${cnpj}_${competencia || registros[0].mesAno}.pdf`).replace(/[\\/:*?"<>|]+/g, '_');
-        const fullPath = path.join(outputDir, filename);
-        await fsp.writeFile(fullPath, Buffer.from(base64, 'base64'));
-        return sendJson(res, 200, { ok: true, path: fullPath, empresaKey, competencia: competencia || registros[0].mesAno, registros: registros.length });
-      }
-
       if (url.pathname === '/agent/run' && req.method === 'POST') {
         const body = await readJson(req);
         const action = String(body.action || '');
-        if (action === 'import_and_report') {
+        if (action === 'import') {
           const folder = safePath(body.folder);
-          const outputDir = safePath(body.outputDir);
           const recursive = body.recursive !== false;
           if (!fs.existsSync(folder)) return sendJson(res, 400, { ok: false, error: 'Pasta XML não encontrada.' });
-          await fsp.mkdir(outputDir, { recursive: true });
           const paths = await walkXml(folder, recursive, Number(body.limit || 10000));
           const files = await readXmlFiles(paths);
           const imported = await invokeRenderer('importXmlBatch', [files]);
-          const archive = await invokeRenderer('getArchive');
-          const reports = [];
-          for (const [empresaKey, empresa] of Object.entries(archive || {})) {
-            const competencias = [...new Set((empresa.registros || []).map((r) => r.mesAno).filter(Boolean))];
-            for (const competencia of competencias) {
-              if (body.competencia && body.competencia !== competencia) continue;
-              const registros = (empresa.registros || []).filter((r) => r.mesAno === competencia);
-              if (!registros.length) continue;
-              const base64 = await invokeRenderer('exportFiscalPdfBase64', [empresa, competencia, registros]);
-              const cnpj = String(empresa.cnpj || empresaKey || 'sem-cnpj').replace(/\D/g, '') || 'sem-cnpj';
-              const empresaDir = path.join(outputDir, cnpj || String(empresaKey));
-              await fsp.mkdir(empresaDir, { recursive: true });
-              const fullPath = path.join(empresaDir, `FiscoAI_${cnpj}_${competencia}.pdf`);
-              await fsp.writeFile(fullPath, Buffer.from(base64, 'base64'));
-              reports.push({ empresaKey, empresa: empresa.razaoSocial || empresa.nome || null, competencia, path: fullPath, registros: registros.length });
-            }
-          }
-          return sendJson(res, 200, { ok: true, found: paths.length, imported, reports });
+          return sendJson(res, 200, { ok: true, found: paths.length, imported });
         }
         return sendJson(res, 400, { ok: false, error: `Ação não suportada: ${action}` });
       }

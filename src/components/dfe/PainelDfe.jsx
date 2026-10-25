@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parsearNFe } from "@/modules/xml/services/parsearNFe";
 import { baixarDocumentoDfe, consultarDfe, listarDocumentosDfe, marcarDocumentosDfe } from "@/modules/dfe/services/distribuicaoDfe.functions";
-import { excluirCertificadoDfe, listarCertificadosDfe, salvarCertificadoDfe } from "@/modules/dfe/services/certificados.functions";
 import { listarEmpresasFisco } from "@/modules/empresas/empresas.functions";
 
 const dataBR = valor => valor ? new Date(valor).toLocaleDateString("pt-BR") : "—";
@@ -16,8 +15,12 @@ const pastaDataEmissao = valor => {
   return match ? { ano: match[1], mes: match[2], chave: `${match[1]}-${match[2]}` } : { ano: "Sem competência", mes: "Sem competência", chave: "sem-competencia" };
 };
 const rotuloCompetencia = chave => chave === "sem-competencia" ? "Sem competência" : `${chave.slice(5, 7)}/${chave.slice(0, 4)}`;
+const competenciaAtual = () => {
+  const hoje = new Date();
+  return `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, "0")}`;
+};
 
-function notaElegivel(nota, cnpjCertificado) {
+function notaEntradaElegivel(nota, cnpjCertificado) {
   const emitente = limparCnpj(nota?.emitente_cnpj);
   const destinatario = limparCnpj(nota?.destinatario_cnpj);
   const origem = String(nota?.uf_origem || "").toUpperCase();
@@ -27,20 +30,15 @@ function notaElegivel(nota, cnpjCertificado) {
     && baseCnpj(destinatario) === baseCnpj(cnpjCertificado)
     && emitente !== destinatario
     && /^[A-Z]{2}$/.test(origem)
-    && /^[A-Z]{2}$/.test(destino)
-    && origem !== destino;
+    && /^[A-Z]{2}$/.test(destino);
 }
 
-export default function PainelDfe({ S, C, onImport }) {
-  const [aba, setAba] = useState("notas");
-  const [certificados, setCertificados] = useState([]);
-  const [cnpj, setCnpj] = useState("");
-  const [nome, setNome] = useState("");
-  const [arquivo, setArquivo] = useState(null);
-  const [senha, setSenha] = useState("");
+export default function PainelDfe({ S, C, onImport, onNavigate }) {
+  const [empresas, setEmpresas] = useState([]);
+  const [competencia, setCompetencia] = useState(competenciaAtual);
   const [selecionado, setSelecionado] = useState("");
   const [documentos, setDocumentos] = useState([]);
-  const [pendentes, setPendentes] = useState(0);
+  const [indicadores, setIndicadores] = useState({ total: 0, importadas: 0, internas: 0, pendentes: 0, falhas: 0, monitoradas: 0, ultimaBusca: null });
   const [pagina, setPagina] = useState(0);
   const [temMais, setTemMais] = useState(false);
   const [cursor, setCursor] = useState(null);
@@ -57,31 +55,31 @@ export default function PainelDfe({ S, C, onImport }) {
     return () => window.clearInterval(timer);
   }, []);
 
-  const atualizarCertificados = useCallback(async () => {
-    const lista = await listarCertificadosDfe();
-    setCertificados(lista);
-    setSelecionado(atual => atual || lista[0]?.cnpj || "");
+  const atualizarEmpresas = useCallback(async () => {
+    const lista = await listarEmpresasFisco();
+    setEmpresas(lista);
+    setSelecionado(atual => atual || lista.find(empresa => empresa.ativa && empresa.certificado?.validade_fim)?.cnpj || "");
     return lista;
   }, []);
 
   const atualizarDocumentos = useCallback(async (alvo, paginaAlvo = 0, acrescentar = false) => {
-    if (!alvo) { setDocumentos([]); setPendentes(0); setCursor(null); setTemMais(false); return { documentos: [], pendentes: [], cursor: null, temMais: false }; }
-    const resultado = await listarDocumentosDfe({ data: { cnpj: alvo, offset: paginaAlvo * PAGE_SIZE } });
+    if (!alvo) { setDocumentos([]); setCursor(null); setTemMais(false); setIndicadores({ total: 0, importadas: 0, internas: 0, pendentes: 0, falhas: 0, monitoradas: 0, ultimaBusca: null }); return { documentos: [], pendentes: [], cursor: null, temMais: false }; }
+    const resultado = await listarDocumentosDfe({ data: { cnpj: alvo, competencia, offset: paginaAlvo * PAGE_SIZE } });
     setDocumentos(atual => {
       const base = acrescentar ? atual : [];
       const porId = new Map([...base, ...(resultado.documentos || [])].map(documento => [documento.id, documento]));
       return [...porId.values()];
     });
-    setPendentes(resultado.pendentes?.length || 0);
     setCursor(resultado.cursor);
     setTemMais(!!resultado.temMais);
+    setIndicadores(resultado.indicadores || {});
     return resultado;
-  }, []);
+  }, [competencia]);
 
   const processarPendentes = useCallback(async (alvo, exibirProgresso = false) => {
-    if (!alvo || filasAtivas.current.has(alvo)) return { importadas: 0, descartadas: 0, falhas: 0 };
+    if (!alvo || filasAtivas.current.has(alvo)) return { importadas: 0, internas: 0, descartadas: 0, falhas: 0 };
     filasAtivas.current.add(alvo);
-    const totais = { importadas: 0, descartadas: 0, falhas: 0 };
+    const totais = { importadas: 0, internas: 0, descartadas: 0, falhas: 0 };
     try {
       while (true) {
         const resultado = await atualizarDocumentos(alvo);
@@ -96,9 +94,12 @@ export default function PainelDfe({ S, C, onImport }) {
             if (parsed.erro || !parsed.nota || !parsed.produtos.length) {
               atualizacoes.push({ id: documento.id, status: "falha", erro: parsed.erro || "XML sem itens de NF-e." });
               totais.falhas++;
-            } else if (!notaElegivel(parsed.nota, alvo)) {
+            } else if (!notaEntradaElegivel(parsed.nota, alvo)) {
               atualizacoes.push({ id: documento.id, status: "descartada" });
               totais.descartadas++;
+            } else if (parsed.nota.uf_origem === parsed.nota.uf_destino) {
+              atualizacoes.push({ id: documento.id, status: "interna" });
+              totais.internas++;
             } else {
               paraImportar.push({ documento, xml: baixado.xml, nomeArquivo: `${documento.id}.xml` });
             }
@@ -144,7 +145,7 @@ export default function PainelDfe({ S, C, onImport }) {
     }
   }, [atualizarDocumentos]);
 
-  useEffect(() => { atualizarCertificados().catch(e => setErro(mensagem(e))); }, [atualizarCertificados]);
+  useEffect(() => { atualizarEmpresas().catch(e => setErro(mensagem(e))); }, [atualizarEmpresas]);
   useEffect(() => {
     if (!selecionado) { atualizarDocumentos(""); return; }
     let ativo = true;
@@ -153,20 +154,30 @@ export default function PainelDfe({ S, C, onImport }) {
     (async () => {
       const resultado = await atualizarDocumentos(selecionado, 0);
       await processarPendentes(selecionado);
-      const [cadastros] = await Promise.all([listarEmpresasFisco()]);
-      const empresa = cadastros.find(item => item.cnpj === selecionado);
+      const empresa = empresas.find(item => item.cnpj === selecionado);
       const consultouHoje = diaBahia(resultado.cursor?.consultado_em) === hojeBahia();
       const aguardando = resultado.cursor?.bloqueado_ate && new Date(resultado.cursor.bloqueado_ate).getTime() > Date.now();
       if (empresa?.busca_xml_automatica && !consultouHoje && !aguardando) {
-        setAviso("Verificando novas NF-e automaticamente para esta empresa…");
+        setAviso("Buscando novos XMLs automaticamente para esta empresa…");
         const busca = await consultarDfe({ data: { cnpj: selecionado } });
         const totais = await processarPendentes(selecionado, true);
         await atualizarDocumentos(selecionado, 0);
-        if (ativo) setAviso(`Busca automática concluída. ${totais.importadas} NF-e importada(s) e salva(s). ${busca.descartados || 0} documento(s) fora do filtro foram descartados.`);
+        if (ativo) setAviso(`Busca automática concluída. ${totais.importadas} NF-e interestadual(is) importada(s) para cálculo; ${totais.internas} NF-e da mesma UF arquivada(s). ${busca.descartados || 0} documento(s) fora do filtro foram descartados.`);
       }
     })().catch(e => { if (ativo) setErro(mensagem(e)); });
     return () => { ativo = false; };
-  }, [selecionado, atualizarDocumentos, processarPendentes]);
+  }, [selecionado, competencia, empresas, atualizarDocumentos, processarPendentes]);
+
+  useEffect(() => {
+    if (!selecionado) return;
+    const timer = window.setInterval(async () => {
+      try {
+        await processarPendentes(selecionado);
+        await atualizarDocumentos(selecionado);
+      } catch (e) { setErro(mensagem(e)); }
+    }, 60000);
+    return () => window.clearInterval(timer);
+  }, [selecionado, processarPendentes, atualizarDocumentos]);
 
   const documentosPorPasta = useMemo(() => {
     const anos = new Map();
@@ -180,52 +191,6 @@ export default function PainelDfe({ S, C, onImport }) {
     });
     return [...anos.entries()].map(([ano, meses]) => [ano, [...meses.entries()]]);
   }, [documentos]);
-
-  const enviarCertificado = async evento => {
-    evento.preventDefault();
-    const form = evento.currentTarget;
-    if (!arquivo || arquivo.size > 65536) { setErro("Selecione um certificado A1 PFX/P12 de até 64 KB."); return; }
-    setOcupado("certificado"); setErro(""); setAviso("");
-    try {
-      const bytes = new Uint8Array(await arquivo.arrayBuffer());
-      let binario = "";
-      for (const byte of bytes) binario += String.fromCharCode(byte);
-      await salvarCertificadoDfe({ data: { cnpj: cnpj.replace(/\D/g, ""), nome, pfxBase64: btoa(binario), senha } });
-      setArquivo(null); setSenha(""); setNome(""); setCnpj(""); form.reset();
-      await atualizarCertificados();
-      setAviso("Certificado cadastrado. A senha não fica salva no navegador.");
-    } catch (e) { setErro(mensagem(e)); }
-    finally { setOcupado(""); }
-  };
-
-  const consultar = async () => {
-    if (!selecionado) return;
-    setOcupado("consulta"); setErro(""); setAviso("");
-    let lotes = 0;
-    let ultimoNsu = cursor?.ult_nsu || null;
-    const totais = { importadas: 0, descartadas: 0, falhas: 0 };
-    try {
-      while (true) {
-        const resultado = await consultarDfe({ data: { cnpj: selecionado } });
-        lotes++;
-        const processadas = await processarPendentes(selecionado, true);
-        totais.importadas += processadas.importadas;
-        totais.descartadas += processadas.descartadas;
-        totais.falhas += processadas.falhas;
-        await atualizarDocumentos(selecionado);
-        setAviso(`Busca em andamento · lote ${lotes} · ${totais.importadas} NF-e importada(s).`);
-        if (resultado.cStat !== "138" || BigInt(resultado.ultNsu || "0") >= BigInt(resultado.maxNsu || "0")) break;
-        if (!resultado.ultNsu || resultado.ultNsu === ultimoNsu) {
-          throw new Error("A busca foi pausada porque a SEFAZ não avançou o NSU. O que já foi recebido continua salvo.");
-        }
-        ultimoNsu = resultado.ultNsu;
-      }
-      await atualizarDocumentos(selecionado);
-      const detalheFalhas = totais.falhas ? ` ${totais.falhas} precisa(m) de nova tentativa.` : "";
-      setAviso(`${lotes} lote(s) consultado(s). ${totais.importadas} NF-e importada(s) e salva(s) no histórico e no Arquivo Fiscal.${detalheFalhas}`);
-    } catch (e) { setErro(mensagem(e)); }
-    finally { setOcupado(""); }
-  };
 
   const tentarNovamente = async documento => {
     setOcupado(documento.id); setErro("");
@@ -249,106 +214,82 @@ export default function PainelDfe({ S, C, onImport }) {
     finally { setOcupado(""); }
   };
 
-  const remover = async alvo => {
-    if (!window.confirm(`Remover o certificado do CNPJ ${alvo}? Os XMLs já recebidos serão preservados.`)) return;
-    setOcupado(alvo); setErro("");
-    try {
-      await excluirCertificadoDfe({ data: { cnpj: alvo } });
-      setSelecionado(atual => atual === alvo ? "" : atual);
-      await atualizarCertificados();
-      setAviso("Certificado removido; XMLs recebidos preservados.");
-    } catch (e) { setErro(mensagem(e)); }
-    finally { setOcupado(""); }
-  };
-
-  const campo = { ...S.inp, width: "100%" };
-  const tabStyle = ativo => ({ ...S.btn(ativo ? "primary" : "ghost"), minWidth: 170, justifyContent: "center" });
-  const dataCursor = cursor?.consultado_em ? new Date(cursor.consultado_em).toLocaleString("pt-BR") : "Ainda não consultado";
   const bloqueadoAte = cursor?.bloqueado_ate ? new Date(cursor.bloqueado_ate).getTime() : 0;
   const aguardarSefaz = bloqueadoAte > horaAtual;
+  const empresaSelecionada = empresas.find(empresa => empresa.cnpj === selecionado);
+  const monitoramentoAtivo = empresaSelecionada?.ativa && empresaSelecionada?.busca_xml_automatica && empresaSelecionada?.certificado && new Date(empresaSelecionada.certificado.validade_fim).getTime() > horaAtual;
+
+  const periodoFmt = data => data ? new Date(data).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "Sem busca registrada";
+  const stats = [
+    ["XMLs no período", indicadores.total, "Notas completas recebidas", C.blue],
+    ["Importadas para cálculo", indicadores.importadas, "Entradas de outras UFs", C.green],
+    ["Da mesma UF", indicadores.internas, "Guardadas sem cálculo de ICMS", C.blue],
+    ["Aguardando processamento", indicadores.pendentes, "Serão processadas ao abrir o FiscoAI", C.yellow],
+    ["Com falha", indicadores.falhas, "Exigem nova tentativa", C.yellow],
+    ["Empresas monitoradas", indicadores.monitoradas, "Com certificado válido", C.green],
+    ["Última busca", periodoFmt(indicadores.ultimaBusca), cursor?.ultimo_status || "Busca automática na nuvem", C.blue],
+  ];
 
   return <div style={{ display: "grid", gap: 14 }}>
-    <div style={{ ...S.card, padding: 14 }}>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <button type="button" onClick={() => { setAba("notas"); setErro(""); }} style={tabStyle(aba === "notas")}>📥 NF-e de entrada</button>
-        <button type="button" onClick={() => { setAba("certificados"); setErro(""); }} style={tabStyle(aba === "certificados")}>🔐 Certificados</button>
-      </div>
-    </div>
-
     {erro && <div role="alert" style={S.alert("error")}>{erro}</div>}
     {aviso && <div role="status" style={S.alert("success")}>{aviso}</div>}
 
-    {aba === "certificados" ? <>
-      <div style={S.card}>
-        <div style={S.cardTitle}>Certificados digitais A1</div>
-        <p style={{ color: C.muted, fontSize: 12 }}>Cadastre aqui o certificado usado para buscar NF-e. O arquivo e a senha são criptografados no servidor.</p>
-        <form onSubmit={enviarCertificado} autoComplete="off" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 10, alignItems: "end" }}>
-          <label style={{ fontSize: 12 }}>CNPJ autorizado<input required inputMode="numeric" value={cnpj} onChange={e => setCnpj(e.target.value)} placeholder="14 dígitos" style={campo}/></label>
-          <label style={{ fontSize: 12 }}>Identificação<input required name="fiscoai-certificado-identificacao" autoComplete="off" value={nome} onChange={e => setNome(e.target.value)} placeholder="Empresa / filial" style={campo}/></label>
-          <label style={{ fontSize: 12 }}>Certificado A1 (.pfx/.p12)<input required type="file" accept=".pfx,.p12" onChange={e => setArquivo(e.target.files?.[0] || null)} style={campo}/></label>
-          <label style={{ fontSize: 12 }}>Senha do certificado<input required name="fiscoai-certificado-a1-senha" type="password" value={senha} onChange={e => setSenha(e.target.value)} autoComplete="new-password" style={campo}/></label>
-          <button disabled={!!ocupado} type="submit" style={S.btn("primary")}>{ocupado === "certificado" ? "Salvando…" : "Salvar certificado"}</button>
-        </form>
+    <div style={{ ...S.card, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 12, alignItems: "end" }}>
+      <div style={{ gridColumn: "1 / -1" }}>
+        <div style={S.cardTitle}>Central de XMLs</div>
+        <p style={{ color: C.muted, fontSize: 12, margin: "4px 0 0" }}>A busca roda automaticamente na nuvem, mesmo com seu computador desligado. XMLs completos de entrada das duas UFs ficam guardados; só notas de outra UF são importadas para cálculo de ICMS.</p>
       </div>
+      <label style={{ fontSize: 12 }}>Empresa
+        <select value={selecionado} onChange={e => setSelecionado(e.target.value)} style={{ ...S.inp, width: "100%" }} aria-label="Filtrar XMLs por empresa">
+          <option value="">Selecione uma empresa</option>
+          {empresas.filter(empresa => empresa.certificado).map(empresa => <option key={empresa.cnpj} value={empresa.cnpj}>{empresa.nome_fantasia || empresa.razao_social} — {empresa.cnpj}</option>)}
+        </select>
+      </label>
+      <label style={{ fontSize: 12 }}>Competência de emissão
+        <input type="month" value={competencia} onChange={e => { if (!e.target.value) return; setCompetencia(e.target.value); setPagina(0); setDocumentos([]); }} style={{ ...S.inp, width: "100%" }} />
+      </label>
+      <div role="status" style={{ color: `rgb(${aguardarSefaz ? C.yellow : monitoramentoAtivo ? C.green : C.yellow})`, fontSize: 12, fontWeight: 700, padding: "10px 0" }}>
+        {aguardarSefaz ? `A próxima consulta respeitará a espera da SEFAZ até ${new Date(bloqueadoAte).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}.` : monitoramentoAtivo ? "● Monitoramento automático ativo" : "Busca pausada: confira a empresa e a validade do certificado."}
+      </div>
+      {!empresas.some(empresa => empresa.certificado) && <button type="button" onClick={() => onNavigate?.("empresas")} style={S.btn("primary")}>Cadastrar empresa e certificado</button>}
+    </div>
 
-      <div style={S.card}>
-        <div style={S.cardTitle}>Validade</div>
-        {!certificados.length ? <p style={{ color: C.muted }}>Nenhum certificado cadastrado.</p> : certificados.map(cert => {
-          const dias = Math.ceil((new Date(cert.validade_fim).getTime() - Date.now()) / 86400000);
-          const alerta = dias <= 0 ? "Vencido" : dias <= 30 ? `Vence em ${dias} dia(s)` : dias <= 60 ? `Atenção: ${dias} dias` : "Válido";
-          return <div key={cert.cnpj} style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", padding: "10px 0", borderBottom: `1px solid ${C.border}` }}>
-            <div><strong>{cert.nome}</strong> · {cert.cnpj}<div style={{ fontSize: 11, color: C.muted }}>{cert.titular} · até {dataBR(cert.validade_fim)}</div></div>
-            <div role="status" style={{ color: dias <= 30 ? "#ffbd47" : "#34d399", fontWeight: 700 }}>{alerta}</div>
-            <button disabled={!!ocupado} onClick={() => remover(cert.cnpj)} style={S.btn("ghost")}>Remover</button>
-          </div>;
-        })}
-      </div>
-    </> : <>
-      <div style={S.card}>
-        <div style={S.cardTitle}>Buscar NF-e de entrada</div>
-        <p style={{ color: C.muted, fontSize: 12 }}>A busca importa automaticamente XMLs completos destinados à empresa do certificado, quando o fornecedor está em outra UF. Resumos e outros documentos não são guardados.</p>
-        {!certificados.length && <p style={{ color: C.muted, fontSize: 12 }}>Cadastre um certificado na aba <strong>Certificados</strong> para começar.</p>}
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(220px,1fr) auto", gap: 8, alignItems: "end" }}>
-          <label style={{ fontSize: 12 }}>Empresa
-            <select value={selecionado} onChange={e => setSelecionado(e.target.value)} style={campo} aria-label="Empresa para buscar NF-e">
-              <option value="">Selecione uma empresa</option>
-              {certificados.map(cert => <option key={cert.cnpj} value={cert.cnpj}>{cert.nome} — {cert.cnpj}</option>)}
-            </select>
-          </label>
-          <button disabled={!selecionado || !!ocupado || aguardarSefaz} onClick={consultar} style={S.btn("primary")}>{ocupado === "consulta" ? "Buscando e importando…" : aguardarSefaz ? `Nova busca após ${new Date(bloqueadoAte).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}` : "Buscar e importar NF-e"}</button>
-        </div>
-        {cursor && <p style={{ color: C.muted, fontSize: 11, marginBottom: 0 }}>Última busca: {dataCursor} · {cursor.ultimo_status || "Nenhuma consulta realizada"}{pendentes ? ` · ${pendentes} pendente(s) em processamento` : ""}</p>}
-      </div>
+    {selecionado && <div style={{ ...S.statsGrid, gridTemplateColumns: "repeat(auto-fit,minmax(155px,1fr))", gap: 10 }}>
+      {stats.map(([label, value, sub, cor]) => <div key={label} style={{ ...S.card, minHeight: 102, padding: "13px 15px" }}>
+        <div style={{ color: C.muted, fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".04em" }}>{label}</div>
+        <div style={{ color: `rgb(${cor})`, fontSize: label === "Última busca" ? 14 : 23, fontWeight: 800, marginTop: 7, overflowWrap: "anywhere" }}>{label === "Última busca" ? value : Number(value || 0).toLocaleString("pt-BR")}</div>
+        <div style={{ color: C.muted, fontSize: 10, marginTop: 4 }}>{sub}</div>
+      </div>)}
+    </div>}
 
-      <div style={S.card}>
-        <div style={S.cardTitle}>NF-e recebidas</div>
-        {!documentos.length ? <p style={{ color: C.muted }}>Nenhum XML completo de entrada de outra UF disponível.</p> : documentosPorPasta.map(([ano, meses]) => <section key={ano} style={{ border: `1px solid ${C.border}`, borderRadius: 10, padding: "8px 12px", marginBottom: 10 }}>
-          <div style={{ fontSize: 14, fontWeight: 800, color: C.text, padding: "5px 0 9px" }}>📁 {ano}</div>
-          {meses.map(([mes, itens]) => <div key={mes} style={{ borderTop: `1px solid ${C.border}`, paddingTop: 7, marginTop: 5 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: C.muted, padding: "2px 0 4px" }}>📂 {rotuloCompetencia(mes)} <span style={{ fontWeight: 400 }}>({itens.length})</span></div>
-            {itens.map(doc => {
-              const importada = doc.processamento_status === "importada";
-              const falhou = doc.processamento_status === "falha";
-              const identificacao = doc.numero_nfe ? `NF-e ${doc.numero_nfe}${doc.serie_nfe ? ` · Série ${doc.serie_nfe}` : ""}` : `NF-e · NSU ${doc.nsu}`;
-              return <div key={doc.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "9px 0", borderBottom: `1px solid ${C.border}` }}>
-                <div style={{ minWidth: 220, flex: 1 }}>
-                  <strong>{identificacao}</strong>{doc.emitente_nome ? ` · ${doc.emitente_nome}` : ""}
-                  <div style={{ fontSize: 11, color: C.muted }}>{doc.uf_origem && doc.uf_destino ? `${doc.uf_origem} → ${doc.uf_destino} · ` : ""}{dataBR(doc.data_emissao)}{doc.valor_total_xml ? ` · R$ ${Number(doc.valor_total_xml).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}` : ""}</div>
-                  {falhou && <div style={{ fontSize: 11, color: "#fca5a5" }}>{doc.processamento_erro || "Falha ao processar."}</div>}
-                </div>
-                <div role="status" style={{ color: importada ? "#34d399" : falhou ? "#fca5a5" : "#ffbd47", fontWeight: 700, fontSize: 12 }}>
-                  {importada ? "Importada e salva" : falhou ? "Precisa de nova tentativa" : "Processando"}
-                </div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  {falhou && <button disabled={!!ocupado} onClick={() => tentarNovamente(doc)} style={S.btn("ghost")}>Tentar novamente</button>}
-                  <button disabled={!!ocupado} onClick={() => obterXml(doc)} style={S.btn("ghost")}>Baixar XML</button>
-                </div>
-              </div>;
-            })}
-          </div>)}
-        </section>)}
-        {temMais && <button disabled={!!ocupado} onClick={async () => { const proxima = pagina + 1; setPagina(proxima); try { await atualizarDocumentos(selecionado, proxima, true); } catch (e) { setErro(mensagem(e)); } }} style={{ ...S.btn("ghost"), width: "100%", justifyContent: "center" }}>Carregar notas anteriores</button>}
-      </div>
-    </>}
+    <div style={S.card}>
+      <div style={S.cardTitle}>Notas da competência · {rotuloCompetencia(competencia)}</div>
+      {!selecionado ? <div style={{ color: C.muted }}>Selecione uma empresa com certificado cadastrado.</div> : !documentos.length ? <div style={{ color: C.muted }}>Nenhum XML completo de entrada recebido nesta competência.</div> : documentosPorPasta.map(([ano, meses]) => <section key={ano} style={{ border: `1px solid ${C.border}`, borderRadius: 10, padding: "8px 12px", marginBottom: 10 }}>
+        <div style={{ fontSize: 14, fontWeight: 800, color: C.text, padding: "5px 0 9px" }}>📁 {ano}</div>
+        {meses.map(([mes, itens]) => <div key={mes} style={{ borderTop: `1px solid ${C.border}`, paddingTop: 7, marginTop: 5 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.muted, padding: "2px 0 4px" }}>📂 {rotuloCompetencia(mes)} <span style={{ fontWeight: 400 }}>({itens.length})</span></div>
+          {itens.map(doc => {
+            const importada = doc.processamento_status === "importada";
+            const interna = doc.processamento_status === "interna" || (doc.uf_origem && doc.uf_origem === doc.uf_destino);
+            const falhou = doc.processamento_status === "falha";
+            const identificacao = doc.numero_nfe ? `NF-e ${doc.numero_nfe}${doc.serie_nfe ? ` · Série ${doc.serie_nfe}` : ""}` : `NF-e · NSU ${doc.nsu}`;
+            const status = importada ? "Importada para cálculo" : interna ? "XML guardado · mesma UF" : falhou ? "Precisa de nova tentativa" : doc.processamento_status === "descartada" ? "Não elegível para cálculo" : "Aguardando processamento";
+            return <div key={doc.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "9px 0", borderBottom: `1px solid ${C.border}` }}>
+              <div style={{ minWidth: 220, flex: 1 }}>
+                <strong>{identificacao}</strong>{doc.emitente_nome ? ` · ${doc.emitente_nome}` : ""}
+                <div style={{ fontSize: 11, color: C.muted }}>{doc.uf_origem && doc.uf_destino ? `${doc.uf_origem} → ${doc.uf_destino} · ` : ""}{dataBR(doc.data_emissao)}{doc.valor_total_xml ? ` · R$ ${Number(doc.valor_total_xml).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}` : ""}</div>
+                {falhou && <div style={{ fontSize: 11, color: "#fca5a5" }}>{doc.processamento_erro || "Falha ao processar."}</div>}
+              </div>
+              <div role="status" style={{ color: importada || interna ? `rgb(${C.green})` : falhou ? "#fca5a5" : `rgb(${C.yellow})`, fontWeight: 700, fontSize: 12 }}>{status}</div>
+              <div style={{ display: "flex", gap: 6 }}>
+                {falhou && <button disabled={!!ocupado} onClick={() => tentarNovamente(doc)} style={S.btn("ghost")}>Tentar novamente</button>}
+                <button disabled={!!ocupado} onClick={() => obterXml(doc)} style={S.btn("ghost")}>Baixar XML</button>
+              </div>
+            </div>;
+          })}
+        </div>)}
+      </section>)}
+      {temMais && <button disabled={!!ocupado} onClick={async () => { const proxima = pagina + 1; setPagina(proxima); try { await atualizarDocumentos(selecionado, proxima, true); } catch (e) { setErro(mensagem(e)); } }} style={{ ...S.btn("ghost"), width: "100%", justifyContent: "center" }}>Carregar XMLs anteriores</button>}
+    </div>
   </div>;
 }
