@@ -38,7 +38,9 @@ function navegadorSimulado() {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.doUnmock("../PersistenciaFiscalNuvem");
+  vi.doUnmock("@/integrations/supabase/client");
   vi.resetModules();
 });
 
@@ -171,6 +173,45 @@ describe("persistência de notas e histórico", () => {
     const novo = { EMPRESA: { registros: [{ id: "antigo" }, { id: "novo" }] } };
     await expect(ArquivoFiscalService.save(novo)).rejects.toThrow("versão na nuvem não foi verificada");
     expect(registros.get("arquivo")).toEqual(novo);
+  });
+
+  it("mostra a mensagem real do Supabase quando a falha não é uma instância de Error", async () => {
+    navegadorSimulado();
+    vi.doMock("../PersistenciaFiscalNuvem", () => ({
+      carregarDaNuvem: async () => { throw { code: "42501", message: "acesso negado" }; },
+      salvarNaNuvem: async () => {},
+    }));
+    const { ArquivoFiscalService } = await import("../ArquivoFiscalService");
+    const { avisoSincronizacaoFiscal } = await import("../PersistenciaFiscalLocal");
+    await ArquivoFiscalService.load();
+    expect(avisoSincronizacaoFiscal()).toContain("42501 — acesso negado");
+    expect(avisoSincronizacaoFiscal()).not.toContain("[object Object]");
+  });
+
+  it("renova a sessão e repete leitura e gravação uma vez após 401", async () => {
+    vi.stubGlobal("window", {});
+    vi.stubEnv("VITE_SUPABASE_URL", "https://example.supabase.co");
+    vi.stubEnv("VITE_SUPABASE_PUBLISHABLE_KEY", "sb_publishable_test");
+    const consultar = vi.fn()
+      .mockResolvedValueOnce({ status: 401, error: { message: "JWT expirado" } })
+      .mockResolvedValueOnce({ status: 200, data: { dados: { teste: true }, versao: 2 }, error: null });
+    const gravar = vi.fn()
+      .mockResolvedValueOnce({ status: 401, error: { message: "JWT expirado" } })
+      .mockResolvedValueOnce({ status: 201, error: null });
+    const renovar = vi.fn().mockResolvedValue({ error: null });
+    vi.doMock("@/integrations/supabase/client", () => ({ supabase: {
+      auth: { getSession: async () => ({ data: { session: { user: { id: "usuario" } } }, error: null }), refreshSession: renovar },
+      from: () => ({
+        select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: consultar }) }) }),
+        upsert: gravar,
+      }),
+    } }));
+    const { carregarDaNuvem, salvarNaNuvem } = await import("../PersistenciaFiscalNuvem");
+    expect(await carregarDaNuvem("arquivo")).toEqual({ dados: { teste: true }, versao: 2 });
+    await salvarNaNuvem("arquivo", { teste: true }, 2);
+    expect(consultar).toHaveBeenCalledTimes(2);
+    expect(gravar).toHaveBeenCalledTimes(2);
+    expect(renovar).toHaveBeenCalledTimes(2);
   });
 
   it("recupera a Memória Protegida da nuvem após perder os dados do navegador", async () => {

@@ -5,6 +5,16 @@ import { supabase } from "@/integrations/supabase/client";
 
 const TABELA = "fiscoai_dados_fiscais";
 
+async function repetirAposRenovarSessao(operacao: () => Promise<any>) {
+  let resposta = await operacao();
+  if (resposta.status === 401) {
+    const { error } = await supabase.auth.refreshSession();
+    if (error) throw error;
+    resposta = await operacao();
+  }
+  return resposta;
+}
+
 export function nuvemConfigurada(): boolean {
   return typeof window !== "undefined"
     && !!import.meta.env.VITE_SUPABASE_URL
@@ -21,8 +31,8 @@ export async function usuarioFiscal(): Promise<string | null> {
 export async function carregarDaNuvem(tipo: string): Promise<{ dados: unknown; versao: number } | null> {
   const userId = await usuarioFiscal();
   if (!userId) return null;
-  const { data, error } = await (supabase as any).from(TABELA)
-    .select("dados,versao").eq("user_id", userId).eq("tipo", tipo).maybeSingle();
+  const { data, error } = await repetirAposRenovarSessao(async () => (supabase as any).from(TABELA)
+    .select("dados,versao").eq("user_id", userId).eq("tipo", tipo).maybeSingle());
   if (error) throw error;
   return data ? { dados: data.dados, versao: Number(data.versao) || 0 } : null;
 }
@@ -30,8 +40,8 @@ export async function carregarDaNuvem(tipo: string): Promise<{ dados: unknown; v
 export async function salvarNaNuvem(tipo: string, dados: unknown, versao: number): Promise<void> {
   const userId = await usuarioFiscal();
   if (!userId) return;
-  const { error } = await (supabase as any).from(TABELA).upsert({
+  const { error } = await repetirAposRenovarSessao(async () => (supabase as any).from(TABELA).upsert({
     user_id: userId, tipo, dados, versao, atualizado_em: new Date().toISOString(),
-  }, { onConflict: "user_id,tipo" });
+  }, { onConflict: "user_id,tipo" }));
   if (error) throw error;
 }

@@ -12,6 +12,16 @@ const sincronizacaoBloqueada = new Set<string>();
 
 export function avisoSincronizacaoFiscal(): string | null { return [...avisosNuvem.values()].join(" ") || null; }
 
+function mensagemErro(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object") {
+    const detalhe = error as { code?: unknown; message?: unknown; details?: unknown; hint?: unknown };
+    const partes = [detalhe.code, detalhe.message, detalhe.details, detalhe.hint].filter(valor => typeof valor === "string" && valor.trim());
+    if (partes.length) return partes.join(" — ");
+  }
+  return String(error);
+}
+
 function abrirBanco(): Promise<IDBDatabase> {
   if (!abertura) {
     abertura = new Promise<IDBDatabase>((resolve, reject) => {
@@ -106,7 +116,7 @@ export async function carregarFiscal<T>(chave: string, chaveLegada: string, vazi
     avisosNuvem.delete(chave);
     sincronizacaoBloqueada.delete(chave);
   } catch (error) {
-    avisosNuvem.set(chave, `Não foi possível sincronizar ${chave} na nuvem: ${error instanceof Error ? error.message : String(error)}`);
+    avisosNuvem.set(chave, `Não foi possível sincronizar ${chave} na nuvem: ${mensagemErro(error)}`);
     sincronizacaoBloqueada.add(chave);
   }
   return local;
@@ -128,7 +138,7 @@ export function salvarFiscal(chave: string, chaveLegada: string, dados: unknown)
       await salvarNaNuvem(chave, dados, versao);
       avisosNuvem.delete(chave);
     } catch (error) {
-      avisosNuvem.set(chave, `Dados de ${chave} salvos neste navegador, mas não na nuvem: ${error instanceof Error ? error.message : String(error)}`);
+      avisosNuvem.set(chave, `Dados de ${chave} salvos neste navegador, mas não na nuvem: ${mensagemErro(error)}`);
       throw error;
     }
   });
