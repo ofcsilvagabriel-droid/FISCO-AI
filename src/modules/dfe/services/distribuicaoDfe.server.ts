@@ -69,6 +69,11 @@ function baseCnpj(valor: string): string {
   return String(valor || "").replace(/\D/g, "").slice(0, 8);
 }
 
+function pastaCompetenciaEmissao(dataEmissao: string | null | undefined): string {
+  const correspondencia = String(dataEmissao || "").match(/^(\d{4})-(0[1-9]|1[0-2])/);
+  return correspondencia ? `${correspondencia[1]}/${correspondencia[2]}` : "sem-competencia";
+}
+
 export function extrairEntradaInterestadual(xml: Buffer, schema: string, cnpjCertificado: string) {
   if (!/^procNFe/i.test(schema)) return null;
   const doc = new DOMParser().parseFromString(xml.toString("utf8"), "text/xml");
@@ -147,7 +152,7 @@ export async function consultarDistribuicaoDfe(db: any, userId: string, cnpj: st
         const documento = new DOMParser().parseFromString(xml.toString("utf8"), "text/xml");
         if (!documento.documentElement || documento.documentElement.nodeName === "parsererror") throw new Error("XML inválido recebido da SEFAZ.");
         const chave = texto(documento, "chNFe") || primeiro(documento, "infNFe")?.getAttribute("Id")?.replace(/^NFe/, "") || null;
-        const path = `${userId}/${cnpj}/${item.nsu}-${hash}.enc`;
+        const path = `${userId}/${cnpj}/${pastaCompetenciaEmissao(detalhesNfe.data_emissao)}/${item.nsu}-${hash}.enc`;
         const { error: arquivoErro } = await db.storage.from(BUCKET_DFE).upload(path, criptografarXml(xml), {
           contentType: "application/octet-stream", upsert: true,
         });

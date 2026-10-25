@@ -1,12 +1,21 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parsearNFe } from "@/modules/xml/services/parsearNFe";
 import { baixarDocumentoDfe, consultarDfe, listarDocumentosDfe, marcarDocumentosDfe } from "@/modules/dfe/services/distribuicaoDfe.functions";
 import { excluirCertificadoDfe, listarCertificadosDfe, salvarCertificadoDfe } from "@/modules/dfe/services/certificados.functions";
+import { listarEmpresasFisco } from "@/modules/empresas/empresas.functions";
 
 const dataBR = valor => valor ? new Date(valor).toLocaleDateString("pt-BR") : "—";
 const mensagem = erro => erro?.message || String(erro || "Falha inesperada.");
 const limparCnpj = valor => String(valor || "").replace(/[^0-9a-z]/gi, "").toUpperCase();
 const baseCnpj = valor => limparCnpj(valor).slice(0, 8);
+const PAGE_SIZE = 100;
+const diaBahia = valor => valor ? new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bahia", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(valor)) : "";
+const hojeBahia = () => diaBahia(new Date());
+const pastaDataEmissao = valor => {
+  const match = String(valor || "").match(/^(\d{4})-(0[1-9]|1[0-2])/);
+  return match ? { ano: match[1], mes: match[2], chave: `${match[1]}-${match[2]}` } : { ano: "Sem competência", mes: "Sem competência", chave: "sem-competencia" };
+};
+const rotuloCompetencia = chave => chave === "sem-competencia" ? "Sem competência" : `${chave.slice(5, 7)}/${chave.slice(0, 4)}`;
 
 function notaElegivel(nota, cnpjCertificado) {
   const emitente = limparCnpj(nota?.emitente_cnpj);
@@ -32,6 +41,8 @@ export default function PainelDfe({ S, C, onImport }) {
   const [selecionado, setSelecionado] = useState("");
   const [documentos, setDocumentos] = useState([]);
   const [pendentes, setPendentes] = useState(0);
+  const [pagina, setPagina] = useState(0);
+  const [temMais, setTemMais] = useState(false);
   const [cursor, setCursor] = useState(null);
   const [ocupado, setOcupado] = useState("");
   const [horaAtual, setHoraAtual] = useState(Date.now());
@@ -53,12 +64,17 @@ export default function PainelDfe({ S, C, onImport }) {
     return lista;
   }, []);
 
-  const atualizarDocumentos = useCallback(async alvo => {
-    if (!alvo) { setDocumentos([]); setPendentes(0); setCursor(null); return { documentos: [], pendentes: [], cursor: null }; }
-    const resultado = await listarDocumentosDfe({ data: { cnpj: alvo } });
-    setDocumentos(resultado.documentos || []);
+  const atualizarDocumentos = useCallback(async (alvo, paginaAlvo = 0, acrescentar = false) => {
+    if (!alvo) { setDocumentos([]); setPendentes(0); setCursor(null); setTemMais(false); return { documentos: [], pendentes: [], cursor: null, temMais: false }; }
+    const resultado = await listarDocumentosDfe({ data: { cnpj: alvo, offset: paginaAlvo * PAGE_SIZE } });
+    setDocumentos(atual => {
+      const base = acrescentar ? atual : [];
+      const porId = new Map([...base, ...(resultado.documentos || [])].map(documento => [documento.id, documento]));
+      return [...porId.values()];
+    });
     setPendentes(resultado.pendentes?.length || 0);
     setCursor(resultado.cursor);
+    setTemMais(!!resultado.temMais);
     return resultado;
   }, []);
 
@@ -133,11 +149,37 @@ export default function PainelDfe({ S, C, onImport }) {
     if (!selecionado) { atualizarDocumentos(""); return; }
     let ativo = true;
     setErro("");
-    atualizarDocumentos(selecionado)
-      .then(() => processarPendentes(selecionado))
-      .catch(e => { if (ativo) setErro(mensagem(e)); });
+    setPagina(0);
+    (async () => {
+      const resultado = await atualizarDocumentos(selecionado, 0);
+      await processarPendentes(selecionado);
+      const [cadastros] = await Promise.all([listarEmpresasFisco()]);
+      const empresa = cadastros.find(item => item.cnpj === selecionado);
+      const consultouHoje = diaBahia(resultado.cursor?.consultado_em) === hojeBahia();
+      const aguardando = resultado.cursor?.bloqueado_ate && new Date(resultado.cursor.bloqueado_ate).getTime() > Date.now();
+      if (empresa?.busca_xml_automatica && !consultouHoje && !aguardando) {
+        setAviso("Verificando novas NF-e automaticamente para esta empresa…");
+        const busca = await consultarDfe({ data: { cnpj: selecionado } });
+        const totais = await processarPendentes(selecionado, true);
+        await atualizarDocumentos(selecionado, 0);
+        if (ativo) setAviso(`Busca automática concluída. ${totais.importadas} NF-e importada(s) e salva(s). ${busca.descartados || 0} documento(s) fora do filtro foram descartados.`);
+      }
+    })().catch(e => { if (ativo) setErro(mensagem(e)); });
     return () => { ativo = false; };
   }, [selecionado, atualizarDocumentos, processarPendentes]);
+
+  const documentosPorPasta = useMemo(() => {
+    const anos = new Map();
+    const ordenados = [...documentos].sort((a, b) => String(b.data_emissao || "").localeCompare(String(a.data_emissao || "")) || String(b.nsu).localeCompare(String(a.nsu)));
+    ordenados.forEach(documento => {
+      const pasta = pastaDataEmissao(documento.data_emissao);
+      if (!anos.has(pasta.ano)) anos.set(pasta.ano, new Map());
+      const meses = anos.get(pasta.ano);
+      if (!meses.has(pasta.chave)) meses.set(pasta.chave, []);
+      meses.get(pasta.chave).push(documento);
+    });
+    return [...anos.entries()].map(([ano, meses]) => [ano, [...meses.entries()]]);
+  }, [documentos]);
 
   const enviarCertificado = async evento => {
     evento.preventDefault();
@@ -280,25 +322,32 @@ export default function PainelDfe({ S, C, onImport }) {
 
       <div style={S.card}>
         <div style={S.cardTitle}>NF-e recebidas</div>
-        {!documentos.length ? <p style={{ color: C.muted }}>Nenhum XML completo de entrada de outra UF disponível.</p> : documentos.map(doc => {
-          const importada = doc.processamento_status === "importada";
-          const falhou = doc.processamento_status === "falha";
-          const identificacao = doc.numero_nfe ? `NF-e ${doc.numero_nfe}${doc.serie_nfe ? ` · Série ${doc.serie_nfe}` : ""}` : `NF-e · NSU ${doc.nsu}`;
-          return <div key={doc.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "11px 0", borderBottom: `1px solid ${C.border}` }}>
-            <div style={{ minWidth: 220, flex: 1 }}>
-              <strong>{identificacao}</strong>{doc.emitente_nome ? ` · ${doc.emitente_nome}` : ""}
-              <div style={{ fontSize: 11, color: C.muted }}>{doc.uf_origem && doc.uf_destino ? `${doc.uf_origem} → ${doc.uf_destino} · ` : ""}{dataBR(doc.data_emissao)}{doc.valor_total_xml ? ` · R$ ${Number(doc.valor_total_xml).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}` : ""}</div>
-              {falhou && <div style={{ fontSize: 11, color: "#fca5a5" }}>{doc.processamento_erro || "Falha ao processar."}</div>}
-            </div>
-            <div role="status" style={{ color: importada ? "#34d399" : falhou ? "#fca5a5" : "#ffbd47", fontWeight: 700, fontSize: 12 }}>
-              {importada ? "Importada e salva" : falhou ? "Precisa de nova tentativa" : "Processando"}
-            </div>
-            <div style={{ display: "flex", gap: 6 }}>
-              {falhou && <button disabled={!!ocupado} onClick={() => tentarNovamente(doc)} style={S.btn("ghost")}>Tentar novamente</button>}
-              <button disabled={!!ocupado} onClick={() => obterXml(doc)} style={S.btn("ghost")}>Baixar XML</button>
-            </div>
-          </div>;
-        })}
+        {!documentos.length ? <p style={{ color: C.muted }}>Nenhum XML completo de entrada de outra UF disponível.</p> : documentosPorPasta.map(([ano, meses]) => <section key={ano} style={{ border: `1px solid ${C.border}`, borderRadius: 10, padding: "8px 12px", marginBottom: 10 }}>
+          <div style={{ fontSize: 14, fontWeight: 800, color: C.text, padding: "5px 0 9px" }}>📁 {ano}</div>
+          {meses.map(([mes, itens]) => <div key={mes} style={{ borderTop: `1px solid ${C.border}`, paddingTop: 7, marginTop: 5 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.muted, padding: "2px 0 4px" }}>📂 {rotuloCompetencia(mes)} <span style={{ fontWeight: 400 }}>({itens.length})</span></div>
+            {itens.map(doc => {
+              const importada = doc.processamento_status === "importada";
+              const falhou = doc.processamento_status === "falha";
+              const identificacao = doc.numero_nfe ? `NF-e ${doc.numero_nfe}${doc.serie_nfe ? ` · Série ${doc.serie_nfe}` : ""}` : `NF-e · NSU ${doc.nsu}`;
+              return <div key={doc.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "9px 0", borderBottom: `1px solid ${C.border}` }}>
+                <div style={{ minWidth: 220, flex: 1 }}>
+                  <strong>{identificacao}</strong>{doc.emitente_nome ? ` · ${doc.emitente_nome}` : ""}
+                  <div style={{ fontSize: 11, color: C.muted }}>{doc.uf_origem && doc.uf_destino ? `${doc.uf_origem} → ${doc.uf_destino} · ` : ""}{dataBR(doc.data_emissao)}{doc.valor_total_xml ? ` · R$ ${Number(doc.valor_total_xml).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}` : ""}</div>
+                  {falhou && <div style={{ fontSize: 11, color: "#fca5a5" }}>{doc.processamento_erro || "Falha ao processar."}</div>}
+                </div>
+                <div role="status" style={{ color: importada ? "#34d399" : falhou ? "#fca5a5" : "#ffbd47", fontWeight: 700, fontSize: 12 }}>
+                  {importada ? "Importada e salva" : falhou ? "Precisa de nova tentativa" : "Processando"}
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  {falhou && <button disabled={!!ocupado} onClick={() => tentarNovamente(doc)} style={S.btn("ghost")}>Tentar novamente</button>}
+                  <button disabled={!!ocupado} onClick={() => obterXml(doc)} style={S.btn("ghost")}>Baixar XML</button>
+                </div>
+              </div>;
+            })}
+          </div>)}
+        </section>)}
+        {temMais && <button disabled={!!ocupado} onClick={async () => { const proxima = pagina + 1; setPagina(proxima); try { await atualizarDocumentos(selecionado, proxima, true); } catch (e) { setErro(mensagem(e)); } }} style={{ ...S.btn("ghost"), width: "100%", justifyContent: "center" }}>Carregar notas anteriores</button>}
       </div>
     </>}
   </div>;

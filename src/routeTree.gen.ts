@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthRouteImport } from './routes/auth'
+import { Route as ApiCronBuscarNfeRouteImport } from './routes/api/cron/buscar-nfe'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -22,31 +23,40 @@ const AuthRoute = AuthRouteImport.update({
   path: '/auth',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiCronBuscarNfeRoute = ApiCronBuscarNfeRouteImport.update({
+  id: '/api/cron/buscar-nfe',
+  path: '/api/cron/buscar-nfe',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/api/cron/buscar-nfe': typeof ApiCronBuscarNfeRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/api/cron/buscar-nfe': typeof ApiCronBuscarNfeRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/api/cron/buscar-nfe': typeof ApiCronBuscarNfeRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/auth'
+  fullPaths: '/' | '/auth' | '/api/cron/buscar-nfe'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/auth'
-  id: '__root__' | '/' | '/auth'
+  to: '/' | '/auth' | '/api/cron/buscar-nfe'
+  id: '__root__' | '/' | '/auth' | '/api/cron/buscar-nfe'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthRoute: typeof AuthRoute
+  ApiCronBuscarNfeRoute: typeof ApiCronBuscarNfeRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -65,12 +75,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/cron/buscar-nfe': {
+      id: '/api/cron/buscar-nfe'
+      path: '/api/cron/buscar-nfe'
+      fullPath: '/api/cron/buscar-nfe'
+      preLoaderRoute: typeof ApiCronBuscarNfeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthRoute: AuthRoute,
+  ApiCronBuscarNfeRoute: ApiCronBuscarNfeRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -22,7 +22,10 @@ import { CongelamentoService } from "@/modules/fiscal/domain/services/Congelamen
 import MemoriaObsidian from "@/components/MemoriaObsidian";
 import CalculadoraFlutuante from "@/components/CalculadoraFlutuante";
 import PainelDfe from "@/components/dfe/PainelDfe";
+import PainelEmpresas from "@/components/empresas/PainelEmpresas";
+import PainelObrigacoes from "@/components/obrigacoes/PainelObrigacoes";
 import { listarCertificadosDfe } from "@/modules/dfe/services/certificados.functions";
+import { listarEmpresasFisco } from "@/modules/empresas/empresas.functions";
 import { HistoricoApuracaoService } from "@/modules/fiscal/domain/services/HistoricoApuracaoService";
 import { HistoricoImportacaoService, identidadeImportacao, mesclarHistorico } from "@/modules/fiscal/domain/services/HistoricoImportacaoService";
 import { avisoSincronizacaoFiscal } from "@/modules/fiscal/domain/services/PersistenciaFiscalLocal";
@@ -3619,6 +3622,7 @@ export default function App(){
   const[erroPersistencia,setErroPersistencia]=useState(null);
   const[nuvemFiscal,setNuvemFiscal]=useState("verificando");
   const[alertasCertificados,setAlertasCertificados]=useState([]);
+  const[empresasCadastro,setEmpresasCadastro]=useState([]);
   useEffect(()=>{
     let ativo=true;
     Promise.all([loadArquivo(),HistoricoImportacaoService.load(),HistoricoApuracaoService.sincronizar()])
@@ -3651,6 +3655,15 @@ export default function App(){
     }).catch(()=>{});
     return()=>{ativo=false;};
   },[nuvemFiscal,tab]);
+  const atualizarEmpresasCadastro=useCallback(async()=>{
+    const lista=await listarEmpresasFisco();
+    setEmpresasCadastro(lista);
+    return lista;
+  },[]);
+  useEffect(()=>{
+    if(nuvemFiscal!=="ativa")return;
+    atualizarEmpresasCadastro().catch(()=>{});
+  },[nuvemFiscal,atualizarEmpresasCadastro]);
   const[arqEmpresaSel,setArqEmpresaSel]=useState(null);
   const[arqMesSel,setArqMesSel]=useState(null);
   const[arqMsg,setArqMsg]=useState(null);
@@ -4062,14 +4075,16 @@ export default function App(){
 
   const[histApuracoes,setHistApuracoes]=useState([]);
   // mapa cnpj(dígitos) -> nome, para exibir empresas na memória protegida
+  const empresasPorCnpj=useMemo(()=>new Map(empresasCadastro.map(e=>[String(e.cnpj||"").replace(/\D/g,""),e])),[empresasCadastro]);
   const empresasNomesMemoria=useMemo(()=>{
     const m={};
-    Object.values(arquivo?.empresas||{}).forEach(e=>{
+    Object.values(arquivo||{}).forEach(e=>{
       const id=String(e?.cnpj||"").replace(/\D/g,"")||(e?.nome?`NOME:${String(e.nome).toUpperCase().trim()}`:"");
-      if(id) m[id]=e?.nome?`${e.nome} · ${e.cnpj||"sem CNPJ"}`:id;
+      if(id) m[id]=empresasPorCnpj.get(id)?.razao_social||(e?.razaoSocial||e?.nome?`${e.razaoSocial||e.nome} · ${e.cnpj||"sem CNPJ"}`:id);
     });
+    empresasCadastro.forEach(e=>{const id=String(e.cnpj||"").replace(/\D/g,"");if(id)m[id]=e.razao_social||id;});
     return m;
-  },[arquivo]);
+  },[arquivo,empresasCadastro,empresasPorCnpj]);
   const[histApuSel,setHistApuSel]=useState(null);
   useEffect(()=>{ setHistApuracoes(HistoricoApuracaoService.listar()); },[]);
 
@@ -4110,6 +4125,8 @@ export default function App(){
 
   const TABS=[
     {id:"importar",icon:"📂",label:"Importar NF-e"},
+    {id:"empresas",icon:"🏢",label:"Empresas"},
+    {id:"obrigacoes",icon:"📅",label:"Controle mensal ICMS"},
     {id:"dfe",icon:"📥",label:"NF-e de entrada"},
     {id:"danfe",icon:"📥",label:"Consultar DANFE"},
     {id:"analise",icon:"🔍",label:"Análise Fiscal",disabled:!analisado},
@@ -4138,7 +4155,7 @@ export default function App(){
       </div>}
       {!window.fiscoaiDesktop?.isDesktop&&nuvemFiscal==="config"&&<div role="alert" style={{...S.alert("error"),margin:12}}>A cópia na nuvem está indisponível nesta publicação. Arquivo Fiscal e Histórico permanecem apenas neste navegador.</div>}
       {!window.fiscoaiDesktop?.isDesktop&&nuvemFiscal==="ativa"&&!erroPersistencia&&<div role="status" style={{fontSize:11,color:C.muted,padding:"0 12px 4px"}}>☁️ Cópia na nuvem ativada para Arquivo Fiscal e Histórico.</div>}
-      {alertasCertificados.length>0&&<div role="alert" style={{...S.alert("warn"),margin:12}}>⚠️ Certificado(s) digital(is) vencido(s) ou com vencimento em até 60 dias: {alertasCertificados.map(cert=>`${cert.nome} (${new Date(cert.validade_fim).toLocaleDateString("pt-BR")})`).join(", ")}. Abra “Buscar XMLs / Certificados” para renovar.</div>}
+      {alertasCertificados.length>0&&<div role="alert" style={{...S.alert("warn"),margin:12}}>⚠️ Certificado(s) digital(is) vencido(s) ou com vencimento em até 60 dias: {alertasCertificados.map(cert=>`${cert.nome} (${new Date(cert.validade_fim).toLocaleDateString("pt-BR")})`).join(", ")}. Abra “Empresas” para renovar.</div>}
       {/* HEADER */}
       <header style={S.hdr}>
         <div style={{display:"flex",alignItems:"center",gap:12,minWidth:0}}>
@@ -4191,6 +4208,14 @@ export default function App(){
         {tab==="dfe"&&(nuvemFiscal==="ativa"
           ? <PainelDfe S={S} C={C} onImport={importarLote}/>
           : <div style={S.card}>Entre na sua conta para cadastrar certificados e buscar XMLs com segurança. <a href="/auth">Abrir login</a></div>)}
+
+        {tab==="empresas"&&(nuvemFiscal==="ativa"
+          ? <PainelEmpresas S={S} C={C} arquivo={arquivo} historico={historico} memoria={histApuracoes} onNavigate={setTab} onEmpresasChange={atualizarEmpresasCadastro}/>
+          : <div style={S.card}>Entre na sua conta para cadastrar empresas, acessos SEFAZ e certificados com segurança. <a href="/auth">Abrir login</a></div>)}
+
+        {tab==="obrigacoes"&&(nuvemFiscal==="ativa"
+          ? <PainelObrigacoes S={S} C={C}/>
+          : <div style={S.card}>Entre na sua conta para manter o controle mensal de ICMS sincronizado com segurança. <a href="/auth">Abrir login</a></div>)}
 
 
         {/* ═══════════ IMPORTAR ═══════════ */}
@@ -4824,9 +4849,10 @@ export default function App(){
                   return <div style={{color:C.muted,fontSize:12,textAlign:"center",padding:"16px 0"}}>Nenhuma nota com o número “{histBusca}”.</div>;
                 const grupos=new Map();
                 filtrados.forEach(h=>{
-                  const nome=h.nota.destinatario_nome||"Sem destinatário";
                   const cnpj=h.nota.destinatario_cnpj||"";
-                  const k=(cnpj.replace(/\D/g,"")||nome.toUpperCase());
+                  const cnpjNormalizado=cnpj.replace(/\D/g,"");
+                  const nome=empresasPorCnpj.get(cnpjNormalizado)?.razao_social||h.nota.destinatario_nome||"Sem destinatário";
+                  const k=(cnpjNormalizado||nome.toUpperCase());
                   if(!grupos.has(k)) grupos.set(k,{key:k,nome,cnpj,itens:[]});
                   grupos.get(k).itens.push(h);
                 });
@@ -4933,7 +4959,7 @@ export default function App(){
 
         {/* ═══════════ ARQUIVO FISCAL ═══════════ */}
         {tab==="arquivo"&&(()=>{
-          const empresas=Object.entries(arquivo).map(([k,e])=>({key:k,...e}));
+          const empresas=Object.entries(arquivo).map(([k,e])=>({key:k,...e,nomeCadastro:empresasPorCnpj.get(String(e?.cnpj||"").replace(/\D/g,""))?.razao_social||e.razaoSocial}));
           const empSel=arqEmpresaSel?arquivo[arqEmpresaSel]:null;
           const meses=empSel?[...new Set(empSel.registros.map(r=>r.mesAno))].sort().reverse():[];
           const mesAtivo=arqMesSel&&meses.includes(arqMesSel)?arqMesSel:(meses[0]||null);
@@ -4957,7 +4983,7 @@ export default function App(){
                   <div key={e.key} style={S.histItem(arqEmpresaSel===e.key)} onClick={()=>{setArqEmpresaSel(e.key);setArqMesSel(null);}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
                       <div style={{minWidth:0,flex:1}}>
-                        <div style={{fontWeight:700,fontSize:12,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.razaoSocial}</div>
+                        <div style={{fontWeight:700,fontSize:12,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.nomeCadastro||e.razaoSocial}</div>
                         <div style={{fontSize:10,color:C.muted,marginTop:2,fontFamily:"monospace"}}>{formatCNPJ(e.cnpj)}</div>
                         <div style={{fontSize:10,color:C.muted,marginTop:2}}>{e.registros.length} NF-e</div>
                       </div>
