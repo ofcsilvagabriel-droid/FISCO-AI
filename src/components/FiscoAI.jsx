@@ -25,6 +25,7 @@ import { HistoricoApuracaoService } from "@/modules/fiscal/domain/services/Histo
 import { HistoricoImportacaoService, identidadeImportacao, mesclarHistorico } from "@/modules/fiscal/domain/services/HistoricoImportacaoService";
 import { avisoSincronizacaoFiscal } from "@/modules/fiscal/domain/services/PersistenciaFiscalLocal";
 import { nuvemConfigurada, usuarioFiscal } from "@/modules/fiscal/domain/services/PersistenciaFiscalNuvem";
+import { supabase } from "@/integrations/supabase/client";
 import { resolverPorReferenciaExterna } from "@/modules/fiscal/engines/resolverReferenciaExterna";
 import { parsearNFe } from "@/modules/xml/services/parsearNFe";
 
@@ -4120,6 +4121,11 @@ export default function App(){
           {analisado&&<button style={S.btn("primary")} onClick={salvarNoArquivo}>💾 Salvar</button>}
           {analisado&&<button style={S.btn("success")} onClick={()=>exportarCSV(nota,produtos,calculosVisiveis)}>⬇️ CSV</button>}
           {analisado&&<button style={S.btn("ghost")} onClick={reset}>🔄 Nova</button>}
+          {!window.fiscoaiDesktop?.isDesktop&&nuvemFiscal==="ativa"&&<button style={S.btn("ghost")} onClick={async()=>{
+            const {error}=await supabase.auth.signOut({scope:"local"});
+            if(error){setErroPersistencia(`Não foi possível sair da conta: ${error.message}`);return;}
+            window.location.replace("/auth");
+          }}>🚪 Sair</button>}
         </div>
       </header>
 

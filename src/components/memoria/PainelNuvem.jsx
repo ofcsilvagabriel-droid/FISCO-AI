@@ -47,8 +47,12 @@ export default function PainelNuvem({ T, onSincronizou }) {
   };
 
   const sair = async () => {
-    await supabase.auth.signOut();
-    await carregar();
+    const { error } = await supabase.auth.signOut({ scope: "local" });
+    if (error) {
+      toast.error(error.message || "Não foi possível sair da conta");
+      return;
+    }
+    window.location.replace("/auth");
   };
 
   const btn = (bg, borda) => ({
