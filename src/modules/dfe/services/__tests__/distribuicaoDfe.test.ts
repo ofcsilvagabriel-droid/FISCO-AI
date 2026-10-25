@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { randomBytes } from "node:crypto";
 import { criptografarCertificado, criptografarXml, descriptografarCertificado, descriptografarXml, inspecionarCertificado } from "../certificadoDfe.server";
-import { interpretarRetornoDfe, montarConsultaDfe } from "../distribuicaoDfe.server";
+import { extrairEntradaInterestadual, interpretarRetornoDfe, montarConsultaDfe } from "../distribuicaoDfe.server";
 
 describe("Distribuição DF-e", () => {
   it("monta consulta NSU sem dados de nota fixos", () => {
@@ -15,6 +15,22 @@ describe("Distribuição DF-e", () => {
     const resposta = `<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"><soap:Body><retDistDFeInt xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.01"><cStat>138</cStat><xMotivo>Documento localizado</xMotivo><ultNSU>000000000000002</ultNSU><maxNSU>000000000000003</maxNSU><loteDistDFeInt><docZip NSU="000000000000002" schema="resNFe_v1.01.xsd">H4sI</docZip></loteDistDFeInt></retDistDFeInt></soap:Body></soap:Envelope>`;
     expect(interpretarRetornoDfe(resposta)).toMatchObject({ cStat: "138", ultNsu: "000000000000002", documentos: [{ nsu: "000000000000002", schema: "resNFe_v1.01.xsd" }] });
     expect(() => interpretarRetornoDfe("<erro/>")).toThrow();
+  });
+
+  it("mantém apenas NF-e completa de entrada interestadual destinada à empresa do certificado", () => {
+    const xml = (ufEmitente: string, ufDestinatario: string, cnpjDestinatario = "12345678000276") => Buffer.from(
+      `<nfeProc><NFe><infNFe><ide><mod>55</mod><nNF>7</nNF><serie>1</serie><dhEmi>2026-01-10T10:00:00-03:00</dhEmi></ide>` +
+      `<emit><CNPJ>98765432000100</CNPJ><xNome>Fornecedor de teste</xNome><enderEmit><UF>${ufEmitente}</UF></enderEmit></emit>` +
+      `<dest><CNPJ>${cnpjDestinatario}</CNPJ><enderDest><UF>${ufDestinatario}</UF></enderDest></dest>` +
+      `<total><ICMSTot><vNF>123.45</vNF></ICMSTot></total></infNFe></NFe></nfeProc>`,
+    );
+    const cnpjCertificado = "12345678000195";
+    expect(extrairEntradaInterestadual(xml("SP", "BA"), "procNFe_v4.00.xsd", cnpjCertificado)).toMatchObject({
+      numero_nfe: "7", emitente_nome: "Fornecedor de teste", uf_origem: "SP", uf_destino: "BA", valor_total_xml: "123.45",
+    });
+    expect(extrairEntradaInterestadual(xml("BA", "BA"), "procNFe_v4.00.xsd", cnpjCertificado)).toBeNull();
+    expect(extrairEntradaInterestadual(xml("SP", "BA"), "resNFe_v1.01.xsd", cnpjCertificado)).toBeNull();
+    expect(extrairEntradaInterestadual(xml("SP", "BA", "87654321000100"), "procNFe_v4.00.xsd", cnpjCertificado)).toBeNull();
   });
 });
 

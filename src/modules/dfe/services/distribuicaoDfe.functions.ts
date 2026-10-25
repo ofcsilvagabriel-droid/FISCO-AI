@@ -4,6 +4,11 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 
 const cnpjInput = z.object({ cnpj: z.string().regex(/^[0-9]{14}$/) });
 const documentoInput = z.object({ id: z.string().uuid() });
+const processamentoInput = z.object({ items: z.array(z.object({
+  id: z.string().uuid(),
+  status: z.enum(["pendente", "importada", "descartada", "falha"]),
+  erro: z.string().max(500).optional(),
+})).min(1).max(100) });
 
 export const consultarDfe = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -20,17 +25,45 @@ export const listarDocumentosDfe = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const db = supabaseAdmin as any;
-    const [{ data: documentos, error }, { data: cursor, error: cursorErro }] = await Promise.all([
+    const [pendentesResult, recentesResult, cursorResult] = await Promise.all([
       db.from("fiscoai_dfe_documentos")
-        .select("id,cnpj,nsu,schema_xml,chave_acesso,sha256,recebido_em")
+        .select("id,cnpj,nsu,schema_xml,chave_acesso,sha256,recebido_em,processamento_status,processamento_erro,numero_nfe,serie_nfe,emitente_nome,emitente_cnpj,uf_origem,uf_destino,data_emissao,valor_total_xml")
         .eq("user_id", context.userId).eq("cnpj", data.cnpj)
+        .like("schema_xml", "procNFe%")
+        .eq("processamento_status", "pendente")
+        .order("nsu", { ascending: true }).limit(100),
+      db.from("fiscoai_dfe_documentos")
+        .select("id,cnpj,nsu,schema_xml,chave_acesso,sha256,recebido_em,processamento_status,processamento_erro,numero_nfe,serie_nfe,emitente_nome,emitente_cnpj,uf_origem,uf_destino,data_emissao,valor_total_xml")
+        .eq("user_id", context.userId).eq("cnpj", data.cnpj)
+        .like("schema_xml", "procNFe%")
+        .in("processamento_status", ["importada", "falha"])
         .order("nsu", { ascending: false }).limit(100),
       db.from("fiscoai_dfe_cursores")
         .select("ult_nsu,max_nsu,bloqueado_ate,ultimo_status,consultado_em")
         .eq("user_id", context.userId).eq("cnpj", data.cnpj).maybeSingle(),
     ]);
-    if (error || cursorErro) throw new Error(error?.message || cursorErro?.message);
-    return { documentos: documentos ?? [], cursor };
+    if (pendentesResult.error || recentesResult.error || cursorResult.error) {
+      throw new Error(pendentesResult.error?.message || recentesResult.error?.message || cursorResult.error?.message);
+    }
+    const pendentes = pendentesResult.data ?? [];
+    const documentos = [...pendentes, ...(recentesResult.data ?? [])];
+    return { documentos, pendentes, cursor: cursorResult.data };
+  });
+
+export const marcarDocumentosDfe = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .validator((entrada: unknown) => processamentoInput.parse(entrada))
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const db = supabaseAdmin as any;
+    const ids = [...new Set(data.items.map(item => item.id))];
+    const resultados = await Promise.all(data.items.map(item => db.from("fiscoai_dfe_documentos").update({
+      processamento_status: item.status,
+      processamento_erro: item.status === "falha" ? (item.erro || "Falha no processamento da NF-e.") : null,
+    }).eq("id", item.id).eq("user_id", context.userId)));
+    const erro = resultados.find(resultado => resultado.error)?.error;
+    if (erro) throw new Error(erro.message);
+    return { atualizados: ids.length };
   });
 
 export const baixarDocumentoDfe = createServerFn({ method: "POST" })

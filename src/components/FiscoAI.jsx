@@ -3832,6 +3832,10 @@ export default function App(){
     const novosHist=[];
     const importados=[];
     const detalhes=[]; const empresas=new Set(); let ok=0, erro=0;
+    const identidadesExistentes=new Set(historico.map(identidadeImportacao).filter(Boolean));
+    const chavesExistentes=new Set(Object.values(arqAcc||{}).flatMap((empresa)=>
+      Array.isArray(empresa?.registros)?empresa.registros.map(registro=>String(registro?.chaveNFe||registro?.id||"").replace(/\D/g,"")):[]
+    ).filter(chave=>chave.length===44));
     for(const file of files){
       try{
         const xml=typeof file?.text === "function" ? await file.text() : String(file?.xml || "");
@@ -3839,6 +3843,14 @@ export default function App(){
         const{nota:n,produtos:p,erro:e}=parsearNFe(xml);
         if(e||!n||!p.length){
           erro++; detalhes.push({arquivo:fileName,status:"erro",motivo:e||"XML inválido"});
+          continue;
+        }
+        const identidade=identidadeImportacao({nota:n});
+        const chaveNFe=String(n.chave||"").replace(/\D/g,"");
+        const existenteNoHistorico=!!identidade&&identidadesExistentes.has(identidade);
+        const existenteNoArquivo=chaveNFe.length===44&&chavesExistentes.has(chaveNFe);
+        if(existenteNoHistorico&&existenteNoArquivo){
+          ok++; detalhes.push({arquivo:fileName,status:"ok",duplicada:true,numero:n.numero,empresa:n.destinatario_nome||"—"});
           continue;
         }
         const orig=n.uf_origem||ufOrigem;
@@ -3862,6 +3874,8 @@ export default function App(){
         }catch{/* memória é auxiliar */}
         const {next,key,mesAno}=upsertRegistroArquivo(arqAcc,notaFinal,prods,calcs);
         arqAcc=next; empresas.add(key); ok++;
+        if(identidade)identidadesExistentes.add(identidade);
+        if(chaveNFe.length===44)chavesExistentes.add(chaveNFe);
         importados.push({notaFinal,prods,calcs});
         novosHist.push({id:Date.now()+Math.random(),data:new Date().toLocaleString("pt-BR"),nota:notaFinal,produtos:prods,calculos:calcs,xml,modoCalculo,origem:"lote"});
         detalhes.push({arquivo:fileName,status:"ok",numero:notaFinal.numero,empresa:notaFinal.destinatario_nome||"—",mesAno});
@@ -3869,16 +3883,27 @@ export default function App(){
         erro++; detalhes.push({arquivo:fileName,status:"erro",motivo:ex.message||"Falha na leitura"});
       }
     }
-    if(importados.length)setArquivo(prev=>importados.reduce((acc,{notaFinal,prods,calcs})=>upsertRegistroArquivo(acc,notaFinal,prods,calcs).next,prev));
-    if(novosHist.length){
-      setHistorico(h=>mesclarHistorico(h,novosHist));
+    if(importados.length){
+      const historicoFinal=mesclarHistorico(historico,novosHist);
+      try{
+        await Promise.all([saveArquivo(arqAcc),HistoricoImportacaoService.save(historicoFinal)]);
+        arquivoCarregadoRef.current=arqAcc;
+        historicoCarregadoRef.current=historicoFinal;
+        setArquivo(arqAcc);
+        setHistorico(historicoFinal);
+      }catch(ex){
+        const motivo=`Falha ao confirmar gravação na nuvem: ${ex?.message||ex}`;
+        detalhes.forEach(d=>{if(d.status==="ok"){d.status="erro";d.motivo=motivo;}});
+        erro+=ok;
+        ok=0;
+      }
     }
     const resumo={processando:false,total:files.length,ok,erro,empresas:Array.from(empresas),detalhes};
     setLoteStatus(resumo);
     setArqMsg({tipo:ok?"ok":"error",txt:`Lote processado: ${ok} NF-e salvas, ${erro} erros, ${empresas.size} empresa(s) atualizada(s).`});
     setTimeout(()=>setArqMsg(null),5000);
     return resumo;
-  },[arquivo,ufOrigem,ufDestino,modoCalculo]);
+  },[arquivo,historico,ufOrigem,ufDestino,modoCalculo]);
 
   // ============================================================
   // PONTE DO AGENTE LOCAL — usada pela API localhost do Electron.
@@ -4085,7 +4110,7 @@ export default function App(){
 
   const TABS=[
     {id:"importar",icon:"📂",label:"Importar NF-e"},
-    {id:"dfe",icon:"📥",label:"Buscar XMLs / Certificados"},
+    {id:"dfe",icon:"📥",label:"NF-e de entrada"},
     {id:"danfe",icon:"📥",label:"Consultar DANFE"},
     {id:"analise",icon:"🔍",label:"Análise Fiscal",disabled:!analisado},
     {id:"calculo",icon:"🧾",label:"Cálculo ICMS",disabled:!analisado},

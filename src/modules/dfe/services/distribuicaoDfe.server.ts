@@ -10,6 +10,8 @@ const ESPERA_SEFAZ_MS = 60 * 60 * 1000;
 const LIMITE_RESPOSTA = 12 * 1024 * 1024;
 const LIMITE_XML = 10 * 1024 * 1024;
 const DURACAO_LOCK_MS = 10 * 60 * 1000;
+const MODELO_NFE = "55";
+const MAX_DOCUMENTOS_LOTE = 50;
 
 const primeiro = (raiz: Element | Document, nome: string) => raiz.getElementsByTagNameNS("*", nome).item(0);
 const texto = (raiz: Element | Document, nome: string) => primeiro(raiz, nome)?.textContent?.trim() || "";
@@ -59,8 +61,46 @@ export function interpretarRetornoDfe(resposta: string) {
   const documentos = Array.from(retorno.getElementsByTagNameNS("*", "docZip")).map(no => ({
     nsu: no.getAttribute("NSU") || "", schema: no.getAttribute("schema") || "", base64: no.textContent?.trim() || "",
   }));
-  if (documentos.length > 50) throw new Error("Lote da SEFAZ maior que o permitido.");
+  if (documentos.length > MAX_DOCUMENTOS_LOTE) throw new Error("Lote da SEFAZ maior que o permitido.");
   return { cStat, motivo: texto(retorno, "xMotivo"), ultNsu, maxNsu, documentos };
+}
+
+function baseCnpj(valor: string): string {
+  return String(valor || "").replace(/\D/g, "").slice(0, 8);
+}
+
+export function extrairEntradaInterestadual(xml: Buffer, schema: string, cnpjCertificado: string) {
+  if (!/^procNFe/i.test(schema)) return null;
+  const doc = new DOMParser().parseFromString(xml.toString("utf8"), "text/xml");
+  if (!doc.documentElement || doc.documentElement.nodeName === "parsererror") return null;
+  const nfe = primeiro(doc, "NFe");
+  if (!nfe) return null;
+  const ide = primeiro(nfe, "ide");
+  const emit = primeiro(nfe, "emit");
+  const dest = primeiro(nfe, "dest");
+  const enderecoEmit = emit && primeiro(emit, "enderEmit");
+  const enderecoDest = dest && primeiro(dest, "enderDest");
+  const cnpjDestinatario = texto(dest || doc, "CNPJ");
+  const cnpjEmitente = texto(emit || doc, "CNPJ");
+  const ufEmitente = texto(enderecoEmit || emit || doc, "UF").toUpperCase();
+  const ufDestinatario = texto(enderecoDest || dest || doc, "UF").toUpperCase();
+  if (texto(ide || doc, "mod") !== MODELO_NFE
+    || !baseCnpj(cnpjDestinatario)
+    || baseCnpj(cnpjDestinatario) !== baseCnpj(cnpjCertificado)
+    || cnpjEmitente === cnpjDestinatario
+    || !/^[A-Z]{2}$/.test(ufEmitente)
+    || !/^[A-Z]{2}$/.test(ufDestinatario)
+    || ufEmitente === ufDestinatario) return null;
+  return {
+    numero_nfe: texto(ide || doc, "nNF"),
+    serie_nfe: texto(ide || doc, "serie"),
+    emitente_nome: texto(emit || doc, "xNome"),
+    emitente_cnpj: cnpjEmitente,
+    uf_origem: ufEmitente,
+    uf_destino: ufDestinatario,
+    data_emissao: texto(ide || doc, "dhEmi") || texto(ide || doc, "dEmi"),
+    valor_total_xml: texto(primeiro(doc, "ICMSTot") || doc, "vNF") || null,
+  };
 }
 
 export async function consultarDistribuicaoDfe(db: any, userId: string, cnpj: string) {
@@ -91,15 +131,18 @@ export async function consultarDistribuicaoDfe(db: any, userId: string, cnpj: st
     const status = `${retorno.cStat} — ${retorno.motivo}`.slice(0, 250);
     if (!["137", "138", "656"].includes(retorno.cStat)) {
       await db.from("fiscoai_dfe_cursores").update({ ultimo_status: status,
-        bloqueado_ate: new Date(Date.now() + 15 * 60 * 1000).toISOString(), consultado_em: new Date().toISOString(),
+        bloqueado_ate: new Date(Date.now() + (retorno.cStat === "656" ? ESPERA_SEFAZ_MS : 15 * 60 * 1000)).toISOString(), consultado_em: new Date().toISOString(),
       }).eq("user_id", userId).eq("cnpj", cnpj).eq("lock_token", token);
       throw new Error(`SEFAZ: ${status}`);
     }
     let novos = 0;
+    let descartados = 0;
     if (retorno.cStat === "138") {
       for (const item of retorno.documentos) {
         if (!/^[0-9]{15}$/.test(item.nsu) || !item.base64 || !item.schema) throw new Error("Documento DF-e inválido no lote.");
         const xml = gunzipSync(Buffer.from(item.base64, "base64"), { maxOutputLength: LIMITE_XML });
+        const detalhesNfe = extrairEntradaInterestadual(xml, item.schema, cnpj);
+        if (!detalhesNfe) { descartados++; continue; }
         const hash = createHash("sha256").update(xml).digest("hex");
         const documento = new DOMParser().parseFromString(xml.toString("utf8"), "text/xml");
         if (!documento.documentElement || documento.documentElement.nodeName === "parsererror") throw new Error("XML inválido recebido da SEFAZ.");
@@ -111,21 +154,26 @@ export async function consultarDistribuicaoDfe(db: any, userId: string, cnpj: st
         if (arquivoErro) throw new Error(`Falha ao guardar XML recebido: ${arquivoErro.message}`);
         const { error: registroErro } = await db.from("fiscoai_dfe_documentos").upsert({
           user_id: userId, cnpj, nsu: item.nsu, schema_xml: item.schema,
-          chave_acesso: chave, sha256: hash, storage_path: path,
+          chave_acesso: chave, sha256: hash, storage_path: path, processamento_status: "pendente", processamento_erro: null,
+          ...detalhesNfe,
         }, { onConflict: "user_id,cnpj,nsu,sha256", ignoreDuplicates: true });
         if (registroErro) throw new Error(`Falha ao indexar XML recebido: ${registroErro.message}`);
         novos++;
       }
     }
-    const bloqueadoAte = ["137", "656"].includes(retorno.cStat)
+    const NSUAtualizado = retorno.ultNsu || adquirido.ult_nsu;
+    const maxNsuAtualizado = retorno.maxNsu || cursor.max_nsu;
+    const bloqueiaAte = ["137", "656"].includes(retorno.cStat)
+      || (retorno.cStat === "138" && NSUAtualizado === maxNsuAtualizado);
+    const bloqueadoAte = bloqueiaAte
       ? new Date(Date.now() + ESPERA_SEFAZ_MS).toISOString() : new Date(0).toISOString();
     const { error: gravacaoErro } = await db.from("fiscoai_dfe_cursores").update({
-      ult_nsu: retorno.ultNsu || adquirido.ult_nsu, max_nsu: retorno.maxNsu || cursor.max_nsu,
+      ult_nsu: NSUAtualizado, max_nsu: maxNsuAtualizado,
       ultimo_status: status, consultado_em: new Date().toISOString(), bloqueado_ate: bloqueadoAte,
     }).eq("user_id", userId).eq("cnpj", cnpj).eq("lock_token", token);
     if (gravacaoErro) throw new Error(gravacaoErro.message);
-    return { status, recebidos: novos, ultNsu: retorno.ultNsu || adquirido.ult_nsu,
-      maxNsu: retorno.maxNsu || cursor.max_nsu, bloqueadoAte: retorno.cStat === "138" ? null : bloqueadoAte };
+    return { status, cStat: retorno.cStat, recebidos: novos, descartados, ultNsu: retorno.ultNsu || adquirido.ult_nsu,
+      maxNsu: maxNsuAtualizado, bloqueadoAte: bloqueiaAte ? bloqueadoAte : null };
   } finally {
     await db.from("fiscoai_dfe_cursores").update({ lock_ate: new Date(0).toISOString(), lock_token: null })
       .eq("user_id", userId).eq("cnpj", cnpj).eq("lock_token", token);

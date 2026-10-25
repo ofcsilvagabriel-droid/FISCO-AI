@@ -26,6 +26,7 @@ export function parsearNFe(xmlStr) {
     const infAdic = doc.getElementsByTagName("infAdic")[0];
     const nota = {
       chave: inf?.getAttribute("Id")||"", numero:get(ide,"nNF"), serie:get(ide,"serie"),
+      modelo: get(ide,"mod"),
       data_emissao:get(ide,"dhEmi")||get(ide,"dEmi"), natureza_operacao:get(ide,"natOp"),
       uf_origem, uf_destino,
       emitente_nome:get(emit,"xNome")||get(emit,"xFant"), emitente_cnpj:get(emit,"CNPJ"),
