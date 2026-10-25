@@ -30,6 +30,6 @@ describe("A1 com proteção PKCS#12 legada", () => {
     const resultado = prepararCertificado(base64, "senha-teste");
     expect(resultado.metadados.titular).toBe("A1 de teste");
     expect("cert" in resultado.tls && "key" in resultado.tls).toBe(true);
-    expect(() => prepararCertificado(base64, "senha-errada")).toThrow();
+    expect(() => prepararCertificado(base64, "senha-errada")).toThrow("A senha de exportação");
   });
 });

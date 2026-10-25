@@ -70,7 +70,9 @@ export function prepararCertificado(pfxBase64: string, senha: string) {
       certificado = new X509Certificate(certificados[indice]);
       tls = { cert: [certificados[indice], ...certificados.filter((_, i) => i !== indice)].join(""), key };
       createSecureContext(tls);
-    } catch {
+    } catch (erroLegado) {
+      if (erroLegado instanceof Error && /MAC could not be verified|invalid password|mac verify failure/i.test(erroLegado.message))
+        throw new Error("A senha de exportação do arquivo PFX/P12 está incorreta.");
       throw new Error("Não foi possível abrir o certificado A1. Verifique o arquivo PFX/P12 e a senha.");
     }
   }

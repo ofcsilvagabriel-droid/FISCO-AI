@@ -97,11 +97,11 @@ export default function PainelDfe({ S, C, onImport }) {
       <p style={{ color: C.muted, fontSize: 12 }}>Cadastre o certificado do CNPJ autorizado para consultar a Distribuição DF-e. O arquivo e a senha são criptografados no servidor; não são exibidos novamente.</p>
       {erro && <div role="alert" style={S.alert("error")}>{erro}</div>}
       {aviso && <div role="status" style={S.alert("success")}>{aviso}</div>}
-      <form onSubmit={enviarCertificado} style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 10, alignItems: "end" }}>
+      <form onSubmit={enviarCertificado} autoComplete="off" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 10, alignItems: "end" }}>
         <label style={{ fontSize: 12 }}>CNPJ autorizado<input required inputMode="numeric" value={cnpj} onChange={e => setCnpj(e.target.value)} placeholder="14 dígitos" style={campo}/></label>
-        <label style={{ fontSize: 12 }}>Identificação<input required value={nome} onChange={e => setNome(e.target.value)} placeholder="Empresa / filial" style={campo}/></label>
+        <label style={{ fontSize: 12 }}>Identificação<input required name="fiscoai-certificado-identificacao" autoComplete="off" value={nome} onChange={e => setNome(e.target.value)} placeholder="Empresa / filial" style={campo}/></label>
         <label style={{ fontSize: 12 }}>Certificado A1 (.pfx/.p12)<input required type="file" accept=".pfx,.p12" onChange={e => setArquivo(e.target.files?.[0] || null)} style={campo}/></label>
-        <label style={{ fontSize: 12 }}>Senha do certificado<input required type="password" value={senha} onChange={e => setSenha(e.target.value)} autoComplete="off" style={campo}/></label>
+        <label style={{ fontSize: 12 }}>Senha do certificado<input required name="fiscoai-certificado-a1-senha" type="password" value={senha} onChange={e => setSenha(e.target.value)} autoComplete="new-password" style={campo}/></label>
         <button disabled={!!ocupado} type="submit" style={S.btn("primary")}>{ocupado === "certificado" ? "Salvando…" : "Salvar certificado"}</button>
       </form>
       <p style={{ color: C.muted, fontSize: 11 }}>Antes de consultar, confirme que o CNPJ informado pertence à base do certificado. Não envie o PFX ou a senha pelo chat.</p>
