@@ -21,6 +21,8 @@ import { DescricaoIAService } from "@/modules/fiscal/domain/services/DescricaoIA
 import { CongelamentoService } from "@/modules/fiscal/domain/services/CongelamentoService";
 import MemoriaObsidian from "@/components/MemoriaObsidian";
 import CalculadoraFlutuante from "@/components/CalculadoraFlutuante";
+import PainelDfe from "@/components/dfe/PainelDfe";
+import { listarCertificadosDfe } from "@/modules/dfe/services/certificados.functions";
 import { HistoricoApuracaoService } from "@/modules/fiscal/domain/services/HistoricoApuracaoService";
 import { HistoricoImportacaoService, identidadeImportacao, mesclarHistorico } from "@/modules/fiscal/domain/services/HistoricoImportacaoService";
 import { avisoSincronizacaoFiscal } from "@/modules/fiscal/domain/services/PersistenciaFiscalLocal";
@@ -3616,6 +3618,7 @@ export default function App(){
   const[dadosProntos,setDadosProntos]=useState(false);
   const[erroPersistencia,setErroPersistencia]=useState(null);
   const[nuvemFiscal,setNuvemFiscal]=useState("verificando");
+  const[alertasCertificados,setAlertasCertificados]=useState([]);
   useEffect(()=>{
     let ativo=true;
     Promise.all([loadArquivo(),HistoricoImportacaoService.load(),HistoricoApuracaoService.sincronizar()])
@@ -3640,6 +3643,14 @@ export default function App(){
     window.addEventListener("fiscoai:erro-persistencia",informar);
     return()=>window.removeEventListener("fiscoai:erro-persistencia",informar);
   },[]);
+  useEffect(()=>{
+    if(nuvemFiscal!=="ativa")return;
+    let ativo=true;
+    listarCertificadosDfe().then(lista=>{
+      if(ativo)setAlertasCertificados(lista.filter(cert=>new Date(cert.validade_fim).getTime()-Date.now()<=60*86400000));
+    }).catch(()=>{});
+    return()=>{ativo=false;};
+  },[nuvemFiscal,tab]);
   const[arqEmpresaSel,setArqEmpresaSel]=useState(null);
   const[arqMesSel,setArqMesSel]=useState(null);
   const[arqMsg,setArqMsg]=useState(null);
@@ -4074,6 +4085,7 @@ export default function App(){
 
   const TABS=[
     {id:"importar",icon:"📂",label:"Importar NF-e"},
+    {id:"dfe",icon:"📥",label:"Buscar XMLs / Certificados"},
     {id:"danfe",icon:"📥",label:"Consultar DANFE"},
     {id:"analise",icon:"🔍",label:"Análise Fiscal",disabled:!analisado},
     {id:"calculo",icon:"🧾",label:"Cálculo ICMS",disabled:!analisado},
@@ -4101,6 +4113,7 @@ export default function App(){
       </div>}
       {!window.fiscoaiDesktop?.isDesktop&&nuvemFiscal==="config"&&<div role="alert" style={{...S.alert("error"),margin:12}}>A cópia na nuvem está indisponível nesta publicação. Arquivo Fiscal e Histórico permanecem apenas neste navegador.</div>}
       {!window.fiscoaiDesktop?.isDesktop&&nuvemFiscal==="ativa"&&!erroPersistencia&&<div role="status" style={{fontSize:11,color:C.muted,padding:"0 12px 4px"}}>☁️ Cópia na nuvem ativada para Arquivo Fiscal e Histórico.</div>}
+      {alertasCertificados.length>0&&<div role="alert" style={{...S.alert("warn"),margin:12}}>⚠️ Certificado(s) digital(is) vencido(s) ou com vencimento em até 60 dias: {alertasCertificados.map(cert=>`${cert.nome} (${new Date(cert.validade_fim).toLocaleDateString("pt-BR")})`).join(", ")}. Abra “Buscar XMLs / Certificados” para renovar.</div>}
       {/* HEADER */}
       <header style={S.hdr}>
         <div style={{display:"flex",alignItems:"center",gap:12,minWidth:0}}>
@@ -4149,6 +4162,10 @@ export default function App(){
         </aside>
 
         <main style={S.main} className="animate-fadeIn" key={tab}>
+
+        {tab==="dfe"&&(nuvemFiscal==="ativa"
+          ? <PainelDfe S={S} C={C} onImport={importarLote}/>
+          : <div style={S.card}>Entre na sua conta para cadastrar certificados e buscar XMLs com segurança. <a href="/auth">Abrir login</a></div>)}
 
 
         {/* ═══════════ IMPORTAR ═══════════ */}
