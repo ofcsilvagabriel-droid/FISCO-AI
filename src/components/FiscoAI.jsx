@@ -115,6 +115,7 @@ export function upsertRegistroArquivo(arq, nota, produtos, calculos) {
         unidade: p.unidade || "", quantidade: p.quantidade,
         valor_unitario: p.valor_unitario || 0,
         valor_total: p.valor_total, valor_icms: p.valor_icms,
+        valores_xml_originais: p.valores_xml_originais || null,
         valor_desconto: p.valor_desconto || 0,
         valor_frete: p.valor_frete || 0,
         valor_seguro: p.valor_seguro || 0,
@@ -3736,6 +3737,11 @@ export default function App(){
     if (!Object.keys(alteracoes).length) return false;
     const original = produtos[idx];
     const editado = aplicarOverrides(original, alteracoes);
+    editado.valores_xml_originais = original.valores_xml_originais || {
+      valor_total: original.valor_total, valor_frete: original.valor_frete, valor_seguro: original.valor_seguro,
+      valor_outras_desp: original.valor_outras_desp, valor_desconto: original.valor_desconto,
+      aliquota_icms: original.xml?.aliquota_icms ?? original.aliquota_icms,
+    };
     if (Object.prototype.hasOwnProperty.call(alteracoes, "remover_reducoes")) {
       editado.decisao_manual = { ...(original.decisao_manual || { modo: "AUTO" }), remover_reducoes: !!alteracoes.remover_reducoes };
     }

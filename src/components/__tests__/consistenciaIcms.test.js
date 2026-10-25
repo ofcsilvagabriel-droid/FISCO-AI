@@ -52,13 +52,14 @@ describe("consistência de alíquota e ICMS próprio por item", () => {
     const anterior = { tributacao, valor_icms_proprio: 34, valor_icms_st: 20, valor_difal: 10, valor_icms_total: 64 };
     const editado = { ...anterior, valor_icms_st: 40, valor_difal: 15, valor_icms_total: 89 };
     const primeiro = upsertRegistroArquivo({}, nota, [produto], [anterior]);
-    const segundo = upsertRegistroArquivo(primeiro.next, nota, [{ ...produto, valor_total: 1020, aliquota_icms: 7 }], [editado]);
+    const segundo = upsertRegistroArquivo(primeiro.next, nota, [{ ...produto, valor_total: 1020, aliquota_icms: 7, valores_xml_originais: { valor_total: 1000 } }], [editado]);
     const registros = segundo.next[segundo.key].registros;
     expect(registros).toHaveLength(1);
     expect(registros[0].produtos[0].valor_total).toBe(1020);
     expect(registros[0].totais.icmsCalcTotal).toBe(89);
     expect(registros[0].totaisXml.valor_total).toBe(1090);
     expect(registros[0].produtos[0].xml.aliquota_icms).toBe(4);
+    expect(registros[0].produtos[0].valores_xml_originais.valor_total).toBe(1000);
   });
 
   it.each(["AUTO", "ANTECIPACAO", "ICMS_ST", "DIFAL"])("preserva XML de 4 por cento ao calcular e congelar %s", modo => {
