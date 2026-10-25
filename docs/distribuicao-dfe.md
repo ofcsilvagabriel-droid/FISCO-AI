@@ -13,6 +13,7 @@ Fonte: Portal Nacional da NF-e, serviço `NFeDistribuicaoDFe` (produção). Revi
 ## Fluxo e controles
 
 - A1 e senha são cifrados com AES-256-GCM no servidor. Nem a chave de cifragem nem o PFX são expostos por API de leitura ao navegador. A tabela e o bucket privado não concedem acesso direto a `anon`/`authenticated`; as funções validam o usuário e filtram por `user_id`.
+- PFX legado que o OpenSSL da Vercel não abre é convertido somente em memória para certificado/chave PEM antes do mTLS. O fallback usa `node-forge@1.4.0` sob a opção BSD-3-Clause; não usa a verificação de assinatura RSA do pacote (afetada por GHSA-86w9-cpqp-85rv). Reavaliar a dependência quando houver versão corrigida.
 - A consulta usa mTLS e `distNSU`. O retorno `docZip` é descompactado com limite de tamanho, recebe SHA-256, é cifrado e gravado no bucket privado; metadados ficam no banco. O cursor só avança após persistir todos os documentos do lote.
 - `resNFe` é resumo, não nota completa. Apenas XMLs completos (`procNFe`) oferecem botão de importação no FiscoAI. Nenhuma manifestação é automática.
 - Após `cStat=137` ou `656`, o CNPJ aguarda pelo menos uma hora. Outros status exigem investigação antes de novas tentativas; a aplicação aplica pausa de 15 minutos.

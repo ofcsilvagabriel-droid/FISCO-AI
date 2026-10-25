@@ -1,5 +1,6 @@
-import { createCipheriv, createDecipheriv, randomBytes, X509Certificate } from "node:crypto";
+import { createCipheriv, createDecipheriv, createPrivateKey, randomBytes, X509Certificate } from "node:crypto";
 import { createSecureContext } from "node:tls";
+import forge from "node-forge";
 
 type SegredoCertificado = { pfx: string; senha: string };
 
@@ -38,25 +39,52 @@ export function descriptografarXml(bytes: Buffer): Buffer {
   return Buffer.concat([cifra.update(bytes.subarray(12, -16)), cifra.final()]);
 }
 
-export function inspecionarCertificado(pfxBase64: string, senha: string) {
+export function prepararCertificado(pfxBase64: string, senha: string) {
   const bytes = Buffer.from(pfxBase64, "base64");
   if (!bytes.length || bytes.length > 65536) throw new Error("Certificado A1 inválido ou maior que 64 KB.");
   let certificado: X509Certificate;
+  let tls: { pfx: Buffer; passphrase: string } | { cert: string; key: string };
   try {
     const contexto = createSecureContext({ pfx: bytes, passphrase: senha });
     const der = contexto.context.getCertificate();
     if (!der) throw new Error("Certificado ausente");
     certificado = new X509Certificate(der);
-  } catch {
-    throw new Error("Não foi possível abrir o certificado A1. Verifique o arquivo PFX/P12 e a senha.");
+    tls = { pfx: bytes, passphrase: senha };
+  } catch (erro) {
+    if (!(erro instanceof Error) || !/unsupported pkcs12 pfx data/i.test(erro.message))
+      throw new Error("Não foi possível abrir o certificado A1. Verifique o arquivo PFX/P12 e a senha.");
+    try {
+      const asn1 = forge.asn1.fromDer(bytes.toString("binary"));
+      const p12 = forge.pkcs12.pkcs12FromAsn1(asn1, false, senha);
+      const keyBags = [
+        ...(p12.getBags({ bagType: forge.pki.oids.pkcs8ShroudedKeyBag })[forge.pki.oids.pkcs8ShroudedKeyBag] || []),
+        ...(p12.getBags({ bagType: forge.pki.oids.keyBag })[forge.pki.oids.keyBag] || []),
+      ];
+      const certBags = p12.getBags({ bagType: forge.pki.oids.certBag })[forge.pki.oids.certBag] || [];
+      if (keyBags.length !== 1 || !keyBags[0].key || !certBags.length) throw new Error("Chave ou certificado ausente");
+      const key = forge.pki.privateKeyToPem(keyBags[0].key);
+      const chave = createPrivateKey(key);
+      const certificados = certBags.filter(bag => !!bag.cert).map(bag => forge.pki.certificateToPem(bag.cert!));
+      const indice = certificados.findIndex(pem => new X509Certificate(pem).checkPrivateKey(chave));
+      if (indice < 0) throw new Error("Certificado não corresponde à chave privada");
+      certificado = new X509Certificate(certificados[indice]);
+      tls = { cert: [certificados[indice], ...certificados.filter((_, i) => i !== indice)].join(""), key };
+      createSecureContext(tls);
+    } catch {
+      throw new Error("Não foi possível abrir o certificado A1. Verifique o arquivo PFX/P12 e a senha.");
+    }
   }
   const inicio = new Date(certificado.validFrom);
   const fim = new Date(certificado.validTo);
   if (inicio > new Date() || fim <= new Date()) throw new Error("O certificado ainda não está válido ou já venceu.");
-  return {
+  return { tls, metadados: {
     titular: certificado.subject.match(/(?:^|\n)CN\s*=\s*([^\n]+)/)?.[1] || "Titular não identificado",
     validade_inicio: inicio.toISOString(),
     validade_fim: fim.toISOString(),
     fingerprint_sha256: certificado.fingerprint256.replace(/:/g, "").toLowerCase(),
-  };
+  } };
+}
+
+export function inspecionarCertificado(pfxBase64: string, senha: string) {
+  return prepararCertificado(pfxBase64, senha).metadados;
 }

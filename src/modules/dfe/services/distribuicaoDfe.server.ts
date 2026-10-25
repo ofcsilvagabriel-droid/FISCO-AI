@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { request } from "node:https";
 import { gunzipSync } from "node:zlib";
 import { DOMParser } from "@xmldom/xmldom";
-import { criptografarXml, descriptografarCertificado } from "./certificadoDfe.server";
+import { criptografarXml, descriptografarCertificado, prepararCertificado } from "./certificadoDfe.server";
 
 const ENDPOINT_DFE = "https://www1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx";
 const BUCKET_DFE = "fiscoai-dfe-xml";
@@ -24,11 +24,11 @@ export function montarConsultaDfe(cnpj: string, ultNsu: string): string {
     `</distDFeInt></nfeDadosMsg></nfeDistDFeInteresse></soap:Body></soap:Envelope>`;
 }
 
-function requisitarSefaz(corpo: string, pfx: Buffer, senha: string): Promise<string> {
+function requisitarSefaz(corpo: string, tls: ReturnType<typeof prepararCertificado>["tls"]): Promise<string> {
   return new Promise((resolve, reject) => {
     const url = new URL(ENDPOINT_DFE);
     const req = request(url, {
-      method: "POST", pfx, passphrase: senha, timeout: 30000,
+      method: "POST", ...tls, timeout: 30000,
       headers: { "Content-Type": "application/soap+xml; charset=utf-8", "Content-Length": Buffer.byteLength(corpo) },
     }, res => {
       const partes: Buffer[] = [];
@@ -85,7 +85,8 @@ export async function consultarDistribuicaoDfe(db: any, userId: string, cnpj: st
 
   try {
     const segredo = descriptografarCertificado(certificado.segredo_criptografado);
-    const resposta = await requisitarSefaz(montarConsultaDfe(cnpj, adquirido.ult_nsu), Buffer.from(segredo.pfx, "base64"), segredo.senha);
+    const { tls } = prepararCertificado(segredo.pfx, segredo.senha);
+    const resposta = await requisitarSefaz(montarConsultaDfe(cnpj, adquirido.ult_nsu), tls);
     const retorno = interpretarRetornoDfe(resposta);
     const status = `${retorno.cStat} — ${retorno.motivo}`.slice(0, 250);
     if (!["137", "138", "656"].includes(retorno.cStat)) {
