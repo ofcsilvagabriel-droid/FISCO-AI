@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DOMParser as XMLDOMParser } from "@xmldom/xmldom";
 import { parsearNFe } from "@/modules/xml/services/parsearNFe";
-import { calcularICMSProduto, valorTotalNFe, valorTotalRegistroArquivo } from "../FiscoAI";
+import { calcularICMSProduto, upsertRegistroArquivo, valorTotalNFe, valorTotalRegistroArquivo } from "../FiscoAI";
 import { HistoricoApuracaoService } from "@/modules/fiscal/domain/services/HistoricoApuracaoService";
 import { CongelamentoService } from "@/modules/fiscal/domain/services/CongelamentoService";
 import { aplicarOverrides, totaisAntecipacao } from "@/modules/fiscal/domain/engines/simulacaoFiscal";
@@ -44,6 +44,20 @@ describe("consistência de alíquota e ICMS próprio por item", () => {
   it("mantém a leitura de registros antigos sem totais do XML", () => {
     expect(valorTotalRegistroArquivo({ valorTotal: 250 })).toBe(250);
     expect(valorTotalNFe({ totais_xml: { valor_total: NaN } })).toBe(0);
+  });
+
+  it.each(["ICMS_ST", "ANTECIPACAO", "DIFAL"])("atualiza o consolidado da nota sem duplicá-la após salvar cálculo %s", tributacao => {
+    const nota = { chave: "NFeTESTE", numero: "1", data_emissao: "2026-10-25", destinatario_cnpj: "EMPRESA_TESTE", totais_xml: { valor_total: 1090 } };
+    const produto = item();
+    const anterior = { tributacao, valor_icms_proprio: 34, valor_icms_st: 20, valor_difal: 10, valor_icms_total: 64 };
+    const editado = { ...anterior, valor_icms_st: 40, valor_difal: 15, valor_icms_total: 89 };
+    const primeiro = upsertRegistroArquivo({}, nota, [produto], [anterior]);
+    const segundo = upsertRegistroArquivo(primeiro.next, nota, [{ ...produto, valor_total: 1020 }], [editado]);
+    const registros = segundo.next[segundo.key].registros;
+    expect(registros).toHaveLength(1);
+    expect(registros[0].produtos[0].valor_total).toBe(1020);
+    expect(registros[0].totais.icmsCalcTotal).toBe(89);
+    expect(registros[0].totaisXml.valor_total).toBe(1090);
   });
 
   it.each(["AUTO", "ANTECIPACAO", "ICMS_ST", "DIFAL"])("preserva XML de 4 por cento ao calcular e congelar %s", modo => {

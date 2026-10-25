@@ -67,7 +67,7 @@ function totaisAntecipacaoRegistro(registro) {
     reducaoPct: bruto ? numeroSeguro(registro?.totais?.reducaoAntecipacaoPct) || REDUCAO_ANTECIPACAO_PCT : 0,
   };
 }
-function upsertRegistroArquivo(arq, nota, produtos, calculos) {
+export function upsertRegistroArquivo(arq, nota, produtos, calculos) {
   const dest = {
     cnpj: nota.destinatario_cnpj || "",
     nome: nota.destinatario_nome || "Sem destinatário",
