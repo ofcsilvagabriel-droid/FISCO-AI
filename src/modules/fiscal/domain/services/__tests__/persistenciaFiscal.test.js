@@ -172,4 +172,26 @@ describe("persistência de notas e histórico", () => {
     await expect(ArquivoFiscalService.save(novo)).rejects.toThrow("versão na nuvem não foi verificada");
     expect(registros.get("arquivo")).toEqual(novo);
   });
+
+  it("recupera a Memória Protegida da nuvem após perder os dados do navegador", async () => {
+    const { registros, legado } = navegadorSimulado();
+    const remotos = new Map();
+    vi.doMock("../PersistenciaFiscalNuvem", () => ({
+      carregarDaNuvem: async tipo => remotos.get(tipo) || null,
+      salvarNaNuvem: async (tipo, dados, versao) => { remotos.set(tipo, { dados: structuredClone(dados), versao }); },
+    }));
+    vi.stubGlobal("window", { dispatchEvent: () => {} });
+    const { HistoricoApuracaoService } = await import("../HistoricoApuracaoService");
+    await HistoricoApuracaoService.sincronizar();
+    HistoricoApuracaoService.salvarHistoricoNCM({
+      ncm: "00000000", empresa_id: "EMPRESA_TESTE", apuracoes: [], atualizado_em: "2026-10-25T00:00:00Z",
+    });
+    await vi.waitFor(() => expect(remotos.get("memoria-protegida")?.dados?.["EMPRESA_TESTE::00000000"]).toBeDefined());
+    registros.clear();
+    legado.clear();
+    vi.resetModules();
+    const { HistoricoApuracaoService: reaberto } = await import("../HistoricoApuracaoService");
+    await reaberto.sincronizar();
+    expect(reaberto.buscarHistoricoNCM("00000000", "EMPRESA_TESTE")?.empresa_id).toBe("EMPRESA_TESTE");
+  });
 });

@@ -3270,7 +3270,7 @@ function FCPPopover({seq, inicialAtivo, inicialPct, onConfirmar, onFechar}) {
   );
 }
 
-function CalcCard({produto, calculo, fcpConfig, onToggleFCP, popoverAberto, onAbrirPopover, onFecharPopover, override, onAtualizarOverride, onRestaurarOverride}) {
+function CalcCard({produto, calculo, fcpConfig, onToggleFCP, popoverAberto, onAbrirPopover, onFecharPopover, override, onAtualizarOverride, onRestaurarOverride, onSalvarOverride}) {
   const fmt = (v) => "R$ " + parseFloat(v||0).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2});
   const fmtPct = (v) => parseFloat(v||0).toFixed(2).replace(".",",") + "%";
   const [editandoValores, setEditandoValores] = useState(false);
@@ -3337,14 +3337,17 @@ function CalcCard({produto, calculo, fcpConfig, onToggleFCP, popoverAberto, onAb
       )}
 
       {editandoValores && <div style={{marginBottom:10,padding:10,borderRadius:8,border:`1px solid rgba(${C.yellow},0.45)`,background:`rgba(${C.yellow},0.08)`}}>
-        <div style={{fontSize:11,fontWeight:700,color:`rgb(${C.yellow})`,marginBottom:8}}>Simulação temporária — não altera o XML, Arquivo Fiscal, Histórico ou Memória Protegida.</div>
+        <div style={{fontSize:11,fontWeight:700,color:`rgb(${C.yellow})`,marginBottom:8}}>Simulação temporária. Clique em “Salvar alterações” para registrar o cálculo no Arquivo Fiscal e Histórico; o XML original permanece preservado.</div>
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(135px,1fr))",gap:7}}>{camposEditaveis.map(([campo,rotulo])=>{
           const original = Object.prototype.hasOwnProperty.call(override||{},campo) ? override[campo] : produto[campo];
           const valor = Object.prototype.hasOwnProperty.call(rascunhos,campo) ? rascunhos[campo] : original;
           return <label key={campo} style={{fontSize:10,color:C.muted}}>{rotulo}<input style={{...S.inp,marginTop:3,padding:"5px 7px",fontSize:11}} type="number" step="0.01" value={valor??""} onChange={e=>{const n=Number(e.target.value);if(e.target.value===""||Number.isFinite(n)){setRascunhos(atual=>({...atual,[campo]:e.target.value}));onAtualizarOverride?.(campo,e.target.value===""?0:n);}}}/></label>;
         })}</div>
         <label style={{display:"flex",gap:6,alignItems:"center",marginTop:8,fontSize:11,color:C.sub}}><input type="checkbox" checked={!!override?.remover_reducoes} onChange={e=>onAtualizarOverride?.("remover_reducoes",e.target.checked)}/> Remover reduções de base nesta simulação</label>
-        <button style={{...S.btn("ghost"),marginTop:8,fontSize:11,padding:"4px 9px"}} onClick={()=>{setRascunhos({});onRestaurarOverride?.();}}>Restaurar valores do XML</button>
+        <div style={{display:"flex",gap:8,marginTop:8,flexWrap:"wrap"}}>
+          <button style={{...S.btn("ghost"),fontSize:11,padding:"4px 9px"}} onClick={()=>{setRascunhos({});onRestaurarOverride?.();}}>Descartar simulação</button>
+          <button style={{...S.btn("primary"),fontSize:11,padding:"4px 9px"}} onClick={()=>{if(onSalvarOverride?.(produto.seq,rascunhos)){setRascunhos({});setEditandoValores(false);}}}>💾 Salvar alterações</button>
+        </div>
       </div>}
 
       {/* Estado do cálculo: CONGELADO (manual) × AUTOMÁTICO */}
@@ -3590,7 +3593,6 @@ export default function App(){
   const revisaoAnaliseRef=useRef(0);
   const[calculos,setCalculos]=useState([]);
   const[overrides,setOverrides]=useState({});
-  const overridesTimersRef=useRef({});
   // Contingência para XMLs sem UF; na operação normal os dados vêm do XML.
   const[ufOrigem]=useState("SP");
   const[ufDestino]=useState("BA");
@@ -3614,13 +3616,14 @@ export default function App(){
   const[nuvemFiscal,setNuvemFiscal]=useState("verificando");
   useEffect(()=>{
     let ativo=true;
-    Promise.all([loadArquivo(),HistoricoImportacaoService.load()])
+    Promise.all([loadArquivo(),HistoricoImportacaoService.load(),HistoricoApuracaoService.sincronizar()])
       .then(([arquivoSalvo,historicoSalvo])=>{
         if(!ativo)return;
         arquivoCarregadoRef.current=arquivoSalvo;
         historicoCarregadoRef.current=historicoSalvo;
         setArquivo(arquivoSalvo);
         setHistorico(historicoSalvo);
+        setHistApuracoes(HistoricoApuracaoService.listar());
         setDadosProntos(true);
         if(avisoSincronizacaoFiscal())setErroPersistencia(avisoSincronizacaoFiscal());
         if(!nuvemConfigurada())setNuvemFiscal("config");
@@ -3629,6 +3632,11 @@ export default function App(){
       })
       .catch(e=>{if(ativo)setErroPersistencia(`Não foi possível carregar os dados salvos: ${e?.message||e}`);});
     return()=>{ativo=false;};
+  },[]);
+  useEffect(()=>{
+    const informar=(evento)=>setErroPersistencia(evento.detail);
+    window.addEventListener("fiscoai:erro-persistencia",informar);
+    return()=>window.removeEventListener("fiscoai:erro-persistencia",informar);
   },[]);
   const[arqEmpresaSel,setArqEmpresaSel]=useState(null);
   const[arqMesSel,setArqMesSel]=useState(null);
@@ -3711,15 +3719,50 @@ export default function App(){
 
   const atualizarOverride = useCallback((seq, campo, valor) => {
     const chave = `${nota?.chave || "sem-nota"}:${seq}`;
-    clearTimeout(overridesTimersRef.current[chave]);
-    overridesTimersRef.current[chave] = setTimeout(() => {
-      setOverrides(atual => ({ ...atual, [chave]: { ...(atual[chave] || {}), [campo]: valor } }));
-    }, 300);
+    setOverrides(atual => ({ ...atual, [chave]: { ...(atual[chave] || {}), [campo]: valor } }));
   }, [nota]);
   const restaurarOverride = useCallback((seq) => {
     const chave = `${nota?.chave || "sem-nota"}:${seq}`;
     setOverrides(atual => { const proximo = { ...atual }; delete proximo[chave]; return proximo; });
   }, [nota]);
+
+  const salvarOverride = useCallback((seq, rascunhos = {}) => {
+    if (!nota) return false;
+    const idx = produtos.findIndex(p => p.seq === seq);
+    if (idx < 0) return false;
+    const chave = `${nota.chave || "sem-nota"}:${seq}`;
+    const alteracoes = { ...(overrides[chave] || {}) };
+    Object.entries(rascunhos).forEach(([campo, valor]) => { alteracoes[campo] = valor === "" ? 0 : numeroSeguro(valor); });
+    if (!Object.keys(alteracoes).length) return false;
+    const original = produtos[idx];
+    const editado = aplicarOverrides(original, alteracoes);
+    if (Object.prototype.hasOwnProperty.call(alteracoes, "remover_reducoes")) {
+      editado.decisao_manual = { ...(original.decisao_manual || { modo: "AUTO" }), remover_reducoes: !!alteracoes.remover_reducoes };
+    }
+    const orig = nota.uf_origem || ufOrigem, dest = nota.uf_destino || ufDestino;
+    const fcpPct = Object.prototype.hasOwnProperty.call(alteracoes, "fcp_percentual")
+      ? numeroSeguro(alteracoes.fcp_percentual)
+      : (fcpPorProduto?.[seq]?.ativo ? numeroSeguro(fcpPorProduto[seq].percentual) : 0);
+    const cru = calcularCru(editado, orig, dest, editado.decisao_manual?.modo === "DIFAL" ? "DIFAL" : modoCalculo, fcpPct);
+    const congelado = CongelamentoService.congelarCalculoComMemoria(editado, cru, "Usuário salvou alterações dos dados do cálculo", usuarioAtual, editado.empresa_id || empresaIdDe(nota));
+    const exibivel = CongelamentoService.obterCalculoExibivel(congelado, cru);
+    const novos = produtos.map((p, i) => i === idx ? congelado : p);
+    const calcs = calculos.map((c, i) => i === idx ? exibivel : c);
+    revisaoAnaliseRef.current++;
+    setProdutos(novos);
+    setCalculos(calcs);
+    setArquivo(prev => upsertRegistroArquivo(prev, nota, novos, calcs).next);
+    const identidade = identidadeImportacao({ nota });
+    setHistorico(prev => prev.map(entry => (identidade ? identidadeImportacao(entry) === identidade : entry.nota === nota)
+      ? { ...entry, produtos: novos, calculos: calcs } : entry));
+    if (Object.prototype.hasOwnProperty.call(alteracoes, "fcp_percentual")) {
+      setFcpPorProduto(prev => { const next = { ...prev }; if (fcpPct > 0) next[seq] = { ativo: true, percentual: fcpPct }; else delete next[seq]; return next; });
+    }
+    restaurarOverride(seq);
+    setHistApuracoes(HistoricoApuracaoService.listar());
+    setArqMsg({ tipo: "ok", txt: `Alterações do item ${seq} registradas no Arquivo Fiscal, Histórico e relatório consolidado. Verifique o aviso de sincronização na nuvem.` });
+    return true;
+  }, [nota, produtos, calculos, overrides, fcpPorProduto, ufOrigem, ufDestino, modoCalculo, calcularCru, restaurarOverride]);
 
   // Aplica/altera FCP num único produto e recalcula APENAS aquele item.
   // A alteração de FCP é uma intervenção manual → congela o cálculo.
@@ -4611,6 +4654,7 @@ export default function App(){
                   override={overrides[`${nota?.chave || "sem-nota"}:${p.seq}`]}
                   onAtualizarOverride={(campo,valor)=>atualizarOverride(p.seq,campo,valor)}
                   onRestaurarOverride={()=>restaurarOverride(p.seq)}
+                  onSalvarOverride={salvarOverride}
                 />
               </div>
             ))}

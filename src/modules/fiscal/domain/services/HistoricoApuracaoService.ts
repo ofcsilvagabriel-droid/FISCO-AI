@@ -3,8 +3,27 @@
 // por NCM. Em novas notas, a versão corrente válida é reaplicada.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { identificarSeTemPauta } from "../engines/PautaEngine";
+import { carregarFiscal, salvarFiscal } from "./PersistenciaFiscalLocal";
 
 const KEY = "fiscoai:historico-apuracao:v1";
+const TIPO_NUVEM = "memoria-protegida";
+let falhaPersistencia: string | null = null;
+let memoriaAtual: Record<string, any> | null = null;
+
+function mesclarMemoria(remoto: Record<string, any>, local: Record<string, any>): Record<string, any> {
+  const combinado = { ...local, ...remoto };
+  for (const key of Object.keys(local)) {
+    if (!remoto[key]) continue;
+    const recente = String(local[key]?.atualizado_em || "") > String(remoto[key]?.atualizado_em || "") ? local[key] : remoto[key];
+    const antigo = recente === local[key] ? remoto[key] : local[key];
+    const ids = new Set((recente.apuracoes || []).map((apuracao: any) => apuracao.id));
+    combinado[key] = {
+      ...antigo, ...recente,
+      apuracoes: [...(recente.apuracoes || []), ...(antigo.apuracoes || []).filter((apuracao: any) => !ids.has(apuracao.id))],
+    };
+  }
+  return combinado;
+}
 
 export type TipoApuracao = "AUTOMATICO" | "AUTOMATICO_PAUTA" | "CONGELADO_MANUAL" | "MANUAL_CONGELADO";
 
@@ -24,10 +43,12 @@ function log(msg: string) {
 }
 
 function loadAll(): Record<string, any> {
+  if (memoriaAtual) return memoriaAtual;
   try {
     const raw = localStorage.getItem(KEY);
     const dados = raw ? JSON.parse(raw) : {};
     if (sanitizarHistoricos(dados)) localStorage.setItem(KEY, JSON.stringify(dados));
+    memoriaAtual = dados;
     return dados;
   } catch {
     return {};
@@ -61,11 +82,18 @@ function sanitizarHistoricos(data: Record<string, any>): boolean {
 }
 
 function saveAll(data: Record<string, any>) {
+  memoriaAtual = data;
   try {
     sanitizarHistoricos(data);
-    localStorage.setItem(KEY, JSON.stringify(data));
+    try { localStorage.setItem(KEY, JSON.stringify(data)); } catch { /* IndexedDB continua disponível. */ }
+    salvarFiscal(TIPO_NUVEM, KEY, data).then(() => { falhaPersistencia = null; })
+      .catch((erro) => {
+        falhaPersistencia = `Memória Protegida salva neste navegador, mas não sincronizada: ${erro?.message || erro}`;
+        window.dispatchEvent(new CustomEvent("fiscoai:erro-persistencia", { detail: falhaPersistencia }));
+      });
   } catch {
-    /* quota */
+    falhaPersistencia = "Não foi possível salvar a Memória Protegida neste navegador.";
+    window.dispatchEvent(new CustomEvent("fiscoai:erro-persistencia", { detail: falhaPersistencia }));
   }
 }
 
@@ -180,6 +208,15 @@ export const HistoricoApuracaoService = {
   digitos,
   faixaInterestadual,
   derivarRegime,
+  erroPersistencia: () => falhaPersistencia,
+  async sincronizar() {
+    const dados = await carregarFiscal<Record<string, any>>(TIPO_NUVEM, KEY, {}, mesclarMemoria);
+    if (!dados || typeof dados !== "object" || Array.isArray(dados)) throw new Error("Memória Protegida salva é inválida.");
+    sanitizarHistoricos(dados);
+    memoriaAtual = dados;
+    try { localStorage.setItem(KEY, JSON.stringify(dados)); } catch { /* IndexedDB já recebeu os dados. */ }
+    return dados;
+  },
 
   /**
    * Busca a memória do NCM. Quando `faixa` é informada, procura primeiro a
