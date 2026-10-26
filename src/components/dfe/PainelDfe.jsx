@@ -8,6 +8,7 @@ const mensagem = erro => erro?.message || String(erro || "Falha inesperada.");
 const limparCnpj = valor => String(valor || "").replace(/[^0-9a-z]/gi, "").toUpperCase();
 const baseCnpj = valor => limparCnpj(valor).slice(0, 8);
 const PAGE_SIZE = 100;
+const INTERVALO_BUSCA_DFE_MS = 75 * 60 * 1000;
 const diaBahia = valor => valor ? new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bahia", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(valor)) : "";
 const hojeBahia = () => diaBahia(new Date());
 const pastaDataEmissao = valor => {
@@ -156,13 +157,19 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
       await processarPendentes(selecionado);
       const empresa = empresas.find(item => item.cnpj === selecionado);
       const consultouHoje = diaBahia(resultado.cursor?.consultado_em) === hojeBahia();
-      const aguardando = resultado.cursor?.bloqueado_ate && new Date(resultado.cursor.bloqueado_ate).getTime() > Date.now();
+      const proximaBuscaMs = Math.max(
+        resultado.cursor?.bloqueado_ate ? new Date(resultado.cursor.bloqueado_ate).getTime() : 0,
+        resultado.cursor?.consultado_em ? new Date(resultado.cursor.consultado_em).getTime() + INTERVALO_BUSCA_DFE_MS : 0,
+      );
+      const aguardando = proximaBuscaMs > Date.now();
       if (empresa?.busca_xml_automatica && !consultouHoje && !aguardando) {
         setAviso("Buscando novos XMLs automaticamente para esta empresa…");
         const busca = await consultarDfe({ data: { cnpj: selecionado } });
         const totais = await processarPendentes(selecionado, true);
         await atualizarDocumentos(selecionado, 0);
         if (ativo) setAviso(`Busca automática concluída. ${totais.importadas} NF-e interestadual(is) importada(s) para cálculo; ${totais.internas} NF-e da mesma UF arquivada(s). ${busca.descartados || 0} documento(s) fora do filtro foram descartados.`);
+      } else if (empresa?.busca_xml_automatica && aguardando && !consultouHoje) {
+        setAviso(`Próxima busca automática após ${new Date(proximaBuscaMs).toLocaleString("pt-BR")}.`);
       }
     })().catch(e => { if (ativo) setErro(mensagem(e)); });
     return () => { ativo = false; };
@@ -215,7 +222,9 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
   };
 
   const bloqueadoAte = cursor?.bloqueado_ate ? new Date(cursor.bloqueado_ate).getTime() : 0;
-  const aguardarSefaz = bloqueadoAte > horaAtual;
+  const intervaloAte = cursor?.consultado_em ? new Date(cursor.consultado_em).getTime() + INTERVALO_BUSCA_DFE_MS : 0;
+  const proximaBuscaAte = Math.max(bloqueadoAte, intervaloAte);
+  const aguardarSefaz = proximaBuscaAte > horaAtual;
   const empresaSelecionada = empresas.find(empresa => empresa.cnpj === selecionado);
   const monitoramentoAtivo = empresaSelecionada?.ativa && empresaSelecionada?.busca_xml_automatica && empresaSelecionada?.certificado && new Date(empresaSelecionada.certificado.validade_fim).getTime() > horaAtual;
 
@@ -250,7 +259,7 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
         <input type="month" value={competencia} onChange={e => { if (!e.target.value) return; setCompetencia(e.target.value); setPagina(0); setDocumentos([]); }} style={{ ...S.inp, width: "100%" }} />
       </label>
       <div role="status" style={{ color: `rgb(${aguardarSefaz ? C.yellow : monitoramentoAtivo ? C.green : C.yellow})`, fontSize: 12, fontWeight: 700, padding: "10px 0" }}>
-        {aguardarSefaz ? `A próxima consulta respeitará a espera da SEFAZ até ${new Date(bloqueadoAte).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}.` : monitoramentoAtivo ? "● Monitoramento automático ativo" : "Busca pausada: confira a empresa e a validade do certificado."}
+        {aguardarSefaz ? `Próxima busca automática após ${new Date(proximaBuscaAte).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}. Intervalo mínimo de 75 minutos; bloqueios da SEFAZ também são respeitados.` : monitoramentoAtivo ? "● Monitoramento automático ativo · buscas em intervalos mínimos de 75 minutos" : "Busca pausada: confira a empresa e a validade do certificado."}
       </div>
       {!empresas.some(empresa => empresa.certificado) && <button type="button" onClick={() => onNavigate?.("empresas")} style={S.btn("primary")}>Cadastrar empresa e certificado</button>}
     </div>

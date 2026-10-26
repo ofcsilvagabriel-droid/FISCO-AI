@@ -11,7 +11,7 @@ export const Route = createFileRoute("/api/cron/buscar-nfe")({
       return Response.json({ erro: "Não autorizado." }, { status: 401 });
     }
 
-    const [{ supabaseAdmin }, { consultarDistribuicaoDfe, processarCienciasPendentes }] = await Promise.all([
+    const [{ supabaseAdmin }, { consultarDistribuicaoDfe, processarCienciasPendentes, INTERVALO_MINIMO_BUSCA_DFE_MS }] = await Promise.all([
       import("@/integrations/supabase/client.server"),
       import("@/modules/dfe/services/distribuicaoDfe.server"),
     ]);
@@ -35,7 +35,8 @@ export const Route = createFileRoute("/api/cron/buscar-nfe")({
       const cursor = cursorPorChave.get(chave);
       return chavesEmpresa.has(chave)
         && new Date(certificado.validade_fim).getTime() > Date.now()
-        && (!cursor || new Date(cursor.bloqueado_ate).getTime() <= Date.now());
+        && (!cursor || (new Date(cursor.bloqueado_ate).getTime() <= Date.now()
+          && (!cursor.consultado_em || Date.now() - new Date(cursor.consultado_em).getTime() >= INTERVALO_MINIMO_BUSCA_DFE_MS)));
     }).sort((a: any, b: any) => {
       const cursorA = cursorPorChave.get(`${a.user_id}:${a.cnpj}`);
       const cursorB = cursorPorChave.get(`${b.user_id}:${b.cnpj}`);
