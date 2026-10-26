@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { listarEmpresasFisco, removerAcessoSefazEmpresa, salvarAcessoSefazEmpresa, salvarEmpresaFisco } from "@/modules/empresas/empresas.functions";
+import { importarEmpresasFisco, listarEmpresasFisco, removerAcessoSefazEmpresa, salvarAcessoSefazEmpresa, salvarEmpresaFisco } from "@/modules/empresas/empresas.functions";
 import { excluirCertificadoDfe, salvarCertificadoDfe } from "@/modules/dfe/services/certificados.functions";
 
 const REGIMES = [["SN", "Simples Nacional"], ["LP", "Lucro Presumido"], ["LR", "Lucro Real"], ["MEI", "MEI"], ["OUTRO", "Outro"]];
@@ -75,6 +75,24 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
     finally { setOcupado(""); }
   };
 
+  const importarCadastro = async evento => {
+    const arquivo = evento.target.files?.[0];
+    if (!arquivo) return;
+    setOcupado("importacao"); setErro(""); setAviso("");
+    try {
+      const conteudo = JSON.parse(await arquivo.text());
+      const registros = Array.isArray(conteudo) ? conteudo : conteudo.empresas;
+      if (!Array.isArray(registros) || registros.length === 0 || registros.length > 100) {
+        throw new Error("O arquivo deve conter de 1 a 100 empresas no formato JSON.");
+      }
+      const resultado = await importarEmpresasFisco({ data: { empresas: registros } });
+      await carregar();
+      setAviso(`${resultado.empresas_salvas} empresa(s) cadastrada(s); ${resultado.acessos_salvos} acesso(s) protegido(s); ${resultado.sem_acesso} sem credencial completa.`);
+      if (resultado.erros.length) setErro(`${resultado.erros.length} registro(s) não foram concluídos. CNPJs: ${resultado.erros.map(item => formatarCnpj(item.cnpj)).join(", ")}`);
+    } catch (e) { setErro(erroTexto(e)); }
+    finally { setOcupado(""); evento.target.value = ""; }
+  };
+
   const removerAcesso = async () => {
     if (!empresa || !window.confirm("Remover o acesso da SEFAZ desta empresa?")) return;
     setOcupado("acesso"); setErro("");
@@ -115,7 +133,13 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
   return <div style={{ display: "grid", gap: 14 }}>
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
       <div><div style={S.cardTitle}>Cadastro de empresas</div><div style={{ color: C.muted, fontSize: 12 }}>Um cadastro por CNPJ conecta notas, histórico, memória, certificados e obrigações.</div></div>
-      <button onClick={iniciarNova} style={S.btn("primary")}>＋ Nova empresa</button>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <label style={{ ...S.btn("ghost"), cursor: ocupado === "importacao" ? "wait" : "pointer", opacity: ocupado === "importacao" ? 0.65 : 1 }}>
+          {ocupado === "importacao" ? "Importando…" : "Importar cadastro JSON"}
+          <input type="file" accept=".json,application/json" disabled={!!ocupado} onChange={importarCadastro} style={{ display: "none" }}/>
+        </label>
+        <button onClick={iniciarNova} disabled={!!ocupado} style={S.btn("primary")}>＋ Nova empresa</button>
+      </div>
     </div>
     {erro && <div role="alert" style={S.alert("error")}>{erro}</div>}
     {aviso && <div role="status" style={S.alert("success")}>{aviso}</div>}

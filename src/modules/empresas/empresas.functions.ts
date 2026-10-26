@@ -22,6 +22,19 @@ const acessoInput = z.object({
   senha: z.string().max(512).optional().default(""),
   observacoes: z.string().max(2000).optional().nullable(),
 });
+const empresaImportInput = z.object({
+  ...empresaInput.shape,
+  sistema: z.string().trim().min(1).max(120).optional().default("Portal SEFAZ"),
+  endereco_portal: z.string().trim().max(500).optional().nullable(),
+  usuario: z.string().max(240).optional().default(""),
+  senha: z.string().max(512).optional().default(""),
+  observacoes_acesso: z.string().max(2000).optional().nullable(),
+}).superRefine((empresa, contexto) => {
+  if (Boolean(empresa.usuario) !== Boolean(empresa.senha)) {
+    contexto.addIssue({ code: "custom", message: "Usuário e senha precisam ser informados juntos." });
+  }
+});
+const importarEmpresasInput = z.object({ empresas: z.array(empresaImportInput).min(1).max(100) });
 
 export const listarEmpresasFisco = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
@@ -64,6 +77,60 @@ export const salvarEmpresaFisco = createServerFn({ method: "POST" })
       .single();
     if (error) throw new Error(error.message);
     return empresa;
+  });
+
+export const importarEmpresasFisco = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .validator((entrada: unknown) => importarEmpresasInput.parse(entrada))
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { criptografarSegredoEmpresa } = await import("./segredoEmpresa.server");
+    const db = supabaseAdmin as any;
+    let empresasSalvas = 0;
+    let acessosSalvos = 0;
+    const erros: Array<{ cnpj: string; mensagem: string }> = [];
+
+    for (const item of data.empresas) {
+      const { sistema, endereco_portal, usuario, senha, observacoes_acesso, ...empresa } = item;
+      const agora = new Date().toISOString();
+      const { error: empresaErro } = await db.from("fiscoai_empresas").upsert({
+        user_id: context.userId,
+        ...empresa,
+        uf: empresa.uf?.toUpperCase() || null,
+        nome_fantasia: empresa.nome_fantasia || null,
+        inscricao_estadual: empresa.inscricao_estadual || null,
+        atualizado_em: agora,
+      }, { onConflict: "user_id,cnpj" });
+
+      if (empresaErro) {
+        erros.push({ cnpj: empresa.cnpj, mensagem: empresaErro.message });
+        continue;
+      }
+      empresasSalvas += 1;
+
+      if (usuario && senha) {
+        const segredo = criptografarSegredoEmpresa(JSON.stringify({ usuario, senha }));
+        const { error: acessoErro } = await db.from("fiscoai_acessos_sefaz").upsert({
+          user_id: context.userId,
+          empresa_cnpj: empresa.cnpj,
+          sistema,
+          endereco_portal: endereco_portal || null,
+          segredo_criptografado: segredo,
+          observacoes: observacoes_acesso || null,
+          atualizado_em: agora,
+        }, { onConflict: "user_id,empresa_cnpj" });
+        if (acessoErro) erros.push({ cnpj: empresa.cnpj, mensagem: acessoErro.message });
+        else acessosSalvos += 1;
+      }
+    }
+
+    return {
+      total: data.empresas.length,
+      empresas_salvas: empresasSalvas,
+      acessos_salvos: acessosSalvos,
+      sem_acesso: data.empresas.length - acessosSalvos,
+      erros,
+    };
   });
 
 export const salvarAcessoSefazEmpresa = createServerFn({ method: "POST" })
