@@ -15,6 +15,7 @@ const novoFormulario = () => ({ cnpj: CNPJ_VAZIO, razao_social: "", nome_fantasi
 
 export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], memoria = [], onNavigate }) {
   const [empresas, setEmpresas] = useState([]);
+  const [totalEmpresas, setTotalEmpresas] = useState(null);
   const [selecionada, setSelecionada] = useState("");
   const [form, setForm] = useState(novoFormulario);
   const [nova, setNova] = useState(false);
@@ -28,6 +29,7 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
   const carregar = useCallback(async () => {
     const lista = await listarEmpresasFisco();
     setEmpresas(lista);
+    setTotalEmpresas(lista.length);
     return lista;
   }, []);
 
@@ -145,7 +147,7 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
     {aviso && <div role="status" style={S.alert("success")}>{aviso}</div>}
     <div style={{ display: "grid", gridTemplateColumns: "minmax(230px, 0.75fr) minmax(0, 1.6fr)", gap: 14, alignItems: "start" }}>
       <div style={S.card}>
-        <div style={S.cardTitle}>Empresas ({empresas.length})</div>
+        <div style={S.cardTitle}>Empresas ({totalEmpresas ?? empresas.length})</div>
         {!empresas.length && <p style={{ color: C.muted, fontSize: 12 }}>Cadastre a primeira empresa para começar.</p>}
         <div style={{ display: "grid", gap: 6, maxHeight: 560, overflowY: "auto" }}>
           {empresas.map(item => <button key={item.cnpj} type="button" onClick={() => { setSelecionada(item.cnpj); setNova(false); setErro(""); setAviso(""); }} style={{ ...S.histItem(selecionada === item.cnpj), textAlign: "left", cursor: "pointer" }}>
