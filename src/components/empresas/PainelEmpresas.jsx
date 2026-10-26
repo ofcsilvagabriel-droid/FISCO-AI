@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { contarEmpresasFisco, importarEmpresasFisco, listarEmpresasFisco, removerAcessoSefazEmpresa, salvarAcessoSefazEmpresa, salvarEmpresaFisco } from "@/modules/empresas/empresas.functions";
+import { importarEmpresasFisco, listarEmpresasFisco, removerAcessoSefazEmpresa, salvarAcessoSefazEmpresa, salvarEmpresaFisco } from "@/modules/empresas/empresas.functions";
 import { excluirCertificadoDfe, salvarCertificadoDfe } from "@/modules/dfe/services/certificados.functions";
 
 const REGIMES = [["SN", "Simples Nacional"], ["LP", "Lucro Presumido"], ["LR", "Lucro Real"], ["MEI", "MEI"], ["OUTRO", "Outro"]];
@@ -15,7 +15,6 @@ const novoFormulario = () => ({ cnpj: CNPJ_VAZIO, razao_social: "", nome_fantasi
 
 export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], memoria = [], onNavigate }) {
   const [empresas, setEmpresas] = useState([]);
-  const [totalEmpresas, setTotalEmpresas] = useState(null);
   const [selecionada, setSelecionada] = useState("");
   const [form, setForm] = useState(novoFormulario);
   const [nova, setNova] = useState(false);
@@ -27,12 +26,8 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
   const [aviso, setAviso] = useState("");
 
   const carregar = useCallback(async () => {
-    const [lista, total] = await Promise.all([
-      listarEmpresasFisco(),
-      contarEmpresasFisco().catch(() => null),
-    ]);
+    const lista = await listarEmpresasFisco();
     setEmpresas(lista);
-    setTotalEmpresas(Number.isInteger(total) ? total : lista.length);
     return lista;
   }, []);
 
@@ -134,6 +129,15 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
     historico: historico.filter(item => digitos(item?.nota?.destinatario_cnpj) === cnpj).length,
     memoria: memoria.filter(item => digitos(item?.empresa_id) === cnpj).length,
   });
+  const listaEmpresas = empresas.map(item => <button key={item.cnpj} type="button" onClick={() => { setSelecionada(item.cnpj); setNova(false); setErro(""); setAviso(""); }} style={{ ...S.histItem(selecionada === item.cnpj), textAlign: "left", cursor: "pointer" }}>
+    <div style={{ fontWeight: 700, fontSize: 12, color: C.text }}>{item.razao_social}</div>
+    <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>{formatarCnpj(item.cnpj)} · {item.uf || "UF não informada"}</div>
+    <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+      <span style={{ fontSize: 10, color: item.ativa ? "#34d399" : C.muted }}>{item.ativa ? "Ativa" : "Inativa"}</span>
+      {item.certificado && <span style={{ fontSize: 10, color: "#68d391" }}>A1 vinculado</span>}
+      {item.acesso_sefaz && <span style={{ fontSize: 10, color: "#68b6ff" }}>Acesso SEFAZ</span>}
+    </div>
+  </button>);
 
   return <div style={{ display: "grid", gap: 14 }}>
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -150,18 +154,10 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
     {aviso && <div role="status" style={S.alert("success")}>{aviso}</div>}
     <div style={{ display: "grid", gridTemplateColumns: "minmax(230px, 0.75fr) minmax(0, 1.6fr)", gap: 14, alignItems: "start" }}>
       <div style={S.card}>
-        <div style={S.cardTitle}>Empresas ({totalEmpresas ?? empresas.length})</div>
+        <div style={S.cardTitle}>Empresas ({listaEmpresas.length})</div>
         {!empresas.length && <p style={{ color: C.muted, fontSize: 12 }}>Cadastre a primeira empresa para começar.</p>}
         <div style={{ display: "grid", gap: 6, maxHeight: 560, overflowY: "auto" }}>
-          {empresas.map(item => <button key={item.cnpj} type="button" onClick={() => { setSelecionada(item.cnpj); setNova(false); setErro(""); setAviso(""); }} style={{ ...S.histItem(selecionada === item.cnpj), textAlign: "left", cursor: "pointer" }}>
-            <div style={{ fontWeight: 700, fontSize: 12, color: C.text }}>{item.razao_social}</div>
-            <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>{formatarCnpj(item.cnpj)} · {item.uf || "UF não informada"}</div>
-            <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 10, color: item.ativa ? "#34d399" : C.muted }}>{item.ativa ? "Ativa" : "Inativa"}</span>
-              {item.certificado && <span style={{ fontSize: 10, color: "#68d391" }}>A1 vinculado</span>}
-              {item.acesso_sefaz && <span style={{ fontSize: 10, color: "#68b6ff" }}>Acesso SEFAZ</span>}
-            </div>
-          </button>)}
+          {listaEmpresas}
         </div>
       </div>
 
