@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { importarEmpresasFisco, listarEmpresasFisco, removerAcessoSefazEmpresa, salvarAcessoSefazEmpresa, salvarEmpresaFisco } from "@/modules/empresas/empresas.functions";
+import { contarEmpresasFisco, importarEmpresasFisco, listarEmpresasFisco, removerAcessoSefazEmpresa, salvarAcessoSefazEmpresa, salvarEmpresaFisco } from "@/modules/empresas/empresas.functions";
 import { excluirCertificadoDfe, salvarCertificadoDfe } from "@/modules/dfe/services/certificados.functions";
 
 const REGIMES = [["SN", "Simples Nacional"], ["LP", "Lucro Presumido"], ["LR", "Lucro Real"], ["MEI", "MEI"], ["OUTRO", "Outro"]];
@@ -27,9 +27,12 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
   const [aviso, setAviso] = useState("");
 
   const carregar = useCallback(async () => {
-    const lista = await listarEmpresasFisco();
+    const [lista, total] = await Promise.all([
+      listarEmpresasFisco(),
+      contarEmpresasFisco().catch(() => null),
+    ]);
     setEmpresas(lista);
-    setTotalEmpresas(lista.length);
+    setTotalEmpresas(Number.isInteger(total) ? total : lista.length);
     return lista;
   }, []);
 

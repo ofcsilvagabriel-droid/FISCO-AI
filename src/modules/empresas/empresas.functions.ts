@@ -59,6 +59,17 @@ export const listarEmpresasFisco = createServerFn({ method: "GET" })
     }));
   });
 
+export const contarEmpresasFisco = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { count, error } = await (supabaseAdmin as any).from("fiscoai_empresas")
+      .select("cnpj", { count: "exact", head: true })
+      .eq("user_id", context.userId);
+    if (error) throw new Error(error.message);
+    return count || 0;
+  });
+
 export const salvarEmpresaFisco = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .validator((entrada: unknown) => empresaInput.parse(entrada))
