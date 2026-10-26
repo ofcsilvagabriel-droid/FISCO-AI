@@ -38,7 +38,7 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
   const [competencia, setCompetencia] = useState(competenciaAtual);
   const [selecionado, setSelecionado] = useState("");
   const [documentos, setDocumentos] = useState([]);
-  const [indicadores, setIndicadores] = useState({ total: 0, importadas: 0, internas: 0, pendentes: 0, falhas: 0, monitoradas: 0, ultimaBusca: null });
+  const [indicadores, setIndicadores] = useState({ total: 0, importadas: 0, internas: 0, pendentes: 0, falhas: 0, resumos: 0, falhasCiencia: 0, monitoradas: 0, ultimaBusca: null });
   const [pagina, setPagina] = useState(0);
   const [temMais, setTemMais] = useState(false);
   const [cursor, setCursor] = useState(null);
@@ -63,7 +63,7 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
   }, []);
 
   const atualizarDocumentos = useCallback(async (alvo, paginaAlvo = 0, acrescentar = false) => {
-    if (!alvo) { setDocumentos([]); setCursor(null); setTemMais(false); setIndicadores({ total: 0, importadas: 0, internas: 0, pendentes: 0, falhas: 0, monitoradas: 0, ultimaBusca: null }); return { documentos: [], pendentes: [], cursor: null, temMais: false }; }
+    if (!alvo) { setDocumentos([]); setCursor(null); setTemMais(false); setIndicadores({ total: 0, importadas: 0, internas: 0, pendentes: 0, falhas: 0, resumos: 0, falhasCiencia: 0, monitoradas: 0, ultimaBusca: null }); return { documentos: [], pendentes: [], cursor: null, temMais: false }; }
     const resultado = await listarDocumentosDfe({ data: { cnpj: alvo, competencia, offset: paginaAlvo * PAGE_SIZE } });
     setDocumentos(atual => {
       const base = acrescentar ? atual : [];
@@ -221,10 +221,11 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
 
   const periodoFmt = data => data ? new Date(data).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "Sem busca registrada";
   const stats = [
-    ["XMLs no período", indicadores.total, "Notas completas recebidas", C.blue],
+    ["NF-e localizadas", indicadores.total, "XMLs completos e resumos da SEFAZ", C.blue],
     ["Importadas para cálculo", indicadores.importadas, "Entradas de outras UFs", C.green],
     ["Da mesma UF", indicadores.internas, "Guardadas sem cálculo de ICMS", C.blue],
     ["Aguardando processamento", indicadores.pendentes, "Serão processadas ao abrir o FiscoAI", C.yellow],
+    ["Resumos aguardando XML", indicadores.resumos, indicadores.falhasCiencia ? `${indicadores.falhasCiencia} Ciência(s) serão tentadas novamente automaticamente` : "Ciência da Emissão automática registrada quando elegível", C.yellow],
     ["Com falha", indicadores.falhas, "Exigem nova tentativa", C.yellow],
     ["Empresas monitoradas", indicadores.monitoradas, "Com certificado válido", C.green],
     ["Última busca", periodoFmt(indicadores.ultimaBusca), cursor?.ultimo_status || "Busca automática na nuvem", C.blue],
@@ -264,7 +265,7 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
 
     <div style={S.card}>
       <div style={S.cardTitle}>Notas da competência · {rotuloCompetencia(competencia)}</div>
-      {!selecionado ? <div style={{ color: C.muted }}>Selecione uma empresa com certificado cadastrado.</div> : !documentos.length ? <div style={{ color: C.muted }}>Nenhum XML completo de entrada recebido nesta competência.</div> : documentosPorPasta.map(([ano, meses]) => <section key={ano} style={{ border: `1px solid ${C.border}`, borderRadius: 10, padding: "8px 12px", marginBottom: 10 }}>
+      {!selecionado ? <div style={{ color: C.muted }}>Selecione uma empresa com certificado cadastrado.</div> : !documentos.length ? <div style={{ color: C.muted }}>Nenhuma NF-e ou resumo localizado nesta competência. A busca cobre os documentos ainda disponíveis na distribuição da SEFAZ.</div> : documentosPorPasta.map(([ano, meses]) => <section key={ano} style={{ border: `1px solid ${C.border}`, borderRadius: 10, padding: "8px 12px", marginBottom: 10 }}>
         <div style={{ fontSize: 14, fontWeight: 800, color: C.text, padding: "5px 0 9px" }}>📁 {ano}</div>
         {meses.map(([mes, itens]) => <div key={mes} style={{ borderTop: `1px solid ${C.border}`, paddingTop: 7, marginTop: 5 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: C.muted, padding: "2px 0 4px" }}>📂 {rotuloCompetencia(mes)} <span style={{ fontWeight: 400 }}>({itens.length})</span></div>
@@ -272,18 +273,24 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
             const importada = doc.processamento_status === "importada";
             const interna = doc.processamento_status === "interna" || (doc.uf_origem && doc.uf_origem === doc.uf_destino);
             const falhou = doc.processamento_status === "falha";
-            const identificacao = doc.numero_nfe ? `NF-e ${doc.numero_nfe}${doc.serie_nfe ? ` · Série ${doc.serie_nfe}` : ""}` : `NF-e · NSU ${doc.nsu}`;
-            const status = importada ? "Importada para cálculo" : interna ? "XML guardado · mesma UF" : falhou ? "Precisa de nova tentativa" : doc.processamento_status === "descartada" ? "Não elegível para cálculo" : "Aguardando processamento";
+            const resumo = String(doc.schema_xml || "").startsWith("resNFe");
+            const cienciaFalhou = doc.processamento_status === "ciencia_erro";
+            const cienciaPendente = doc.processamento_status === "ciencia_pendente";
+            const cienciaEnviada = doc.processamento_status === "ciencia_enviada";
+            const identificacao = doc.numero_nfe ? `NF-e ${doc.numero_nfe}${doc.serie_nfe ? ` · Série ${doc.serie_nfe}` : ""}` : resumo ? `Resumo da NF-e · ${doc.chave_acesso || `NSU ${doc.nsu}`}` : `NF-e · NSU ${doc.nsu}`;
+            const status = importada ? "Importada para cálculo" : interna ? "XML guardado · mesma UF" : falhou ? "Precisa de nova tentativa" : cienciaFalhou ? "Ciência será tentada novamente" : cienciaPendente ? "Registrando Ciência da Emissão" : cienciaEnviada ? "Ciência enviada · aguardando XML completo" : doc.processamento_status === "descartada" ? "Não elegível para cálculo" : "Aguardando processamento";
             return <div key={doc.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "9px 0", borderBottom: `1px solid ${C.border}` }}>
               <div style={{ minWidth: 220, flex: 1 }}>
                 <strong>{identificacao}</strong>{doc.emitente_nome ? ` · ${doc.emitente_nome}` : ""}
                 <div style={{ fontSize: 11, color: C.muted }}>{doc.uf_origem && doc.uf_destino ? `${doc.uf_origem} → ${doc.uf_destino} · ` : ""}{dataBR(doc.data_emissao)}{doc.valor_total_xml ? ` · R$ ${Number(doc.valor_total_xml).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}` : ""}</div>
                 {falhou && <div style={{ fontSize: 11, color: "#fca5a5" }}>{doc.processamento_erro || "Falha ao processar."}</div>}
+                {cienciaFalhou && <div style={{ fontSize: 11, color: "#fca5a5" }}>{doc.processamento_erro || "A Ciência da Emissão será tentada novamente automaticamente."}</div>}
+                {cienciaEnviada && doc.ciencia_protocolo && <div style={{ fontSize: 11, color: C.muted }}>Protocolo da Ciência: {doc.ciencia_protocolo}</div>}
               </div>
-              <div role="status" style={{ color: importada || interna ? `rgb(${C.green})` : falhou ? "#fca5a5" : `rgb(${C.yellow})`, fontWeight: 700, fontSize: 12 }}>{status}</div>
+              <div role="status" style={{ color: importada || interna ? `rgb(${C.green})` : falhou || cienciaFalhou ? "#fca5a5" : `rgb(${C.yellow})`, fontWeight: 700, fontSize: 12 }}>{status}</div>
               <div style={{ display: "flex", gap: 6 }}>
                 {falhou && <button disabled={!!ocupado} onClick={() => tentarNovamente(doc)} style={S.btn("ghost")}>Tentar novamente</button>}
-                <button disabled={!!ocupado} onClick={() => obterXml(doc)} style={S.btn("ghost")}>Baixar XML</button>
+                {!resumo && <button disabled={!!ocupado} onClick={() => obterXml(doc)} style={S.btn("ghost")}>Baixar XML</button>}
               </div>
             </div>;
           })}

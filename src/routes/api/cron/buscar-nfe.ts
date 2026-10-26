@@ -11,13 +11,14 @@ export const Route = createFileRoute("/api/cron/buscar-nfe")({
       return Response.json({ erro: "Não autorizado." }, { status: 401 });
     }
 
-    const [{ supabaseAdmin }, { consultarDistribuicaoDfe }] = await Promise.all([
+    const [{ supabaseAdmin }, { consultarDistribuicaoDfe, processarCienciasPendentes }] = await Promise.all([
       import("@/integrations/supabase/client.server"),
       import("@/modules/dfe/services/distribuicaoDfe.server"),
     ]);
 
     const db = supabaseAdmin as any;
     const agora = new Date().toISOString();
+    const ciencias = await processarCienciasPendentes(db).catch(() => ({ enviadas: 0, falhas: 1 }));
     const [{ data: empresas, error: empresasErro }, { data: certificados, error: certificadosErro }, { data: cursores, error: cursoresErro }] = await Promise.all([
       db.from("fiscoai_empresas").select("user_id,cnpj").eq("ativa", true).eq("busca_xml_automatica", true),
       db.from("fiscoai_certificados_dfe").select("user_id,cnpj,validade_fim"),
@@ -46,7 +47,7 @@ export const Route = createFileRoute("/api/cron/buscar-nfe")({
     ));
     const consultados = resultados.filter(resultado => resultado.status === "fulfilled").length;
     const falhas = resultados.length - consultados;
-    return Response.json({ executado_em: agora, consultados, falhas, fila_restante: Math.max(0, (empresas?.length || 0) - elegiveis.length) });
+    return Response.json({ executado_em: agora, consultados, falhas, ciencias, fila_restante: Math.max(0, (empresas?.length || 0) - elegiveis.length) });
       },
     },
   },

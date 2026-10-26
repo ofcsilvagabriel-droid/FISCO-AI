@@ -30,6 +30,8 @@ import { nuvemConfigurada, usuarioFiscal } from "@/modules/fiscal/domain/service
 import { supabase } from "@/integrations/supabase/client";
 import { resolverPorReferenciaExterna } from "@/modules/fiscal/engines/resolverReferenciaExterna";
 import { parsearNFe } from "@/modules/xml/services/parsearNFe";
+import { jsPDF } from "jspdf";
+import autoTable from "jspdf-autotable";
 
 import DanfeConsulta from "@/modules/danfe/components/DanfeConsulta";
 import { COLORS as DS_COLORS, TYPOGRAPHY as DS_TYPO } from "@/styles/designSystem";
@@ -229,6 +231,69 @@ function labelMesAno(ma) {
   const idx = parseInt(m, 10) - 1;
   if (!y || idx < 0 || idx > 11) return ma || "—";
   return `${meses[idx]}/${y}`;
+}
+
+function exportarArquivoPDF(empresa, mesAno, registros) {
+  const dinheiro = valor => `R$ ${numeroSeguro(valor).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const pdf = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+  const largura = pdf.internal.pageSize.getWidth();
+  pdf.setFillColor(26, 54, 93); pdf.rect(0, 0, largura, 66, "F");
+  pdf.setTextColor(255); pdf.setFont("helvetica", "bold"); pdf.setFontSize(16);
+  pdf.text("Relatório Fiscal Consolidado — FiscoAI", 36, 29);
+  pdf.setFont("helvetica", "normal"); pdf.setFontSize(10);
+  pdf.text(`Competência: ${labelMesAno(mesAno)} · Emitido em ${new Date().toLocaleString("pt-BR")}`, 36, 49);
+  pdf.setTextColor(45, 55, 72); pdf.setFont("helvetica", "bold"); pdf.setFontSize(12);
+  pdf.text(empresa.razaoSocial || "Empresa", 36, 89);
+  pdf.setFont("helvetica", "normal"); pdf.setFontSize(9);
+  pdf.text(`CNPJ: ${formatCNPJ(empresa.cnpj)} · IE: ${empresa.ie || "Não informada"} · NF-e: ${registros.length}`, 36, 105);
+  const totais = registros.reduce((s, r) => ({
+    valor: s.valor + valorTotalRegistroArquivo(r),
+    icms: s.icms + numeroSeguro(r.totais?.icmsProprio),
+    st: s.st + numeroSeguro(r.totais?.icmsST),
+    antecipacao: s.antecipacao + totaisAntecipacaoRegistro(r).bruto,
+    difal: s.difal + numeroSeguro(r.totais?.difal),
+    calculado: s.calculado + numeroSeguro(r.totais?.icmsCalcTotal),
+  }), { valor: 0, icms: 0, st: 0, antecipacao: 0, difal: 0, calculado: 0 });
+  autoTable(pdf, { startY: 120, head: [["Valor total NF-e", "ICMS próprio", "ICMS-ST", "Antecipação", "DIFAL", "ICMS calculado"]],
+    body: [[dinheiro(totais.valor), dinheiro(totais.icms), dinheiro(totais.st), dinheiro(totais.antecipacao), dinheiro(totais.difal), dinheiro(totais.calculado)]],
+    theme: "grid", headStyles: { fillColor: [45, 55, 72] }, styles: { fontSize: 9 }, margin: { left: 36, right: 36 } });
+  autoTable(pdf, { startY: pdf.lastAutoTable.finalY + 14,
+    head: [["NF", "Série", "Emissão", "Emitente", "UF", "Valor NF-e", "ICMS próprio", "ICMS-ST", "Antecipação", "DIFAL", "Itens"]],
+    body: registros.map(r => [r.numero || "—", r.serie || "—", String(r.dataEmissao || "").slice(0, 10) || "—", r.emitenteNome || "—",
+      `${r.ufOrigem || "?"}→${r.ufDestino || "?"}`, dinheiro(valorTotalRegistroArquivo(r)), dinheiro(r.totais?.icmsProprio), dinheiro(r.totais?.icmsST),
+      dinheiro(totaisAntecipacaoRegistro(r).bruto), dinheiro(r.totais?.difal), String(r.produtos?.length || 0)]),
+    theme: "striped", headStyles: { fillColor: [26, 54, 93] }, styles: { fontSize: 7, cellPadding: 4 },
+    margin: { left: 36, right: 36 }, didDrawPage: () => {
+      pdf.setFontSize(8); pdf.setTextColor(120);
+      pdf.text(`FiscoAI · Relatório consolidado · Página ${pdf.internal.getNumberOfPages()}`, largura - 36, pdf.internal.pageSize.getHeight() - 14, { align: "right" });
+    } });
+  registros.forEach(registro => {
+    pdf.addPage();
+    pdf.setFillColor(26, 54, 93); pdf.rect(0, 0, largura, 34, "F");
+    pdf.setTextColor(255); pdf.setFont("helvetica", "bold"); pdf.setFontSize(11);
+    pdf.text(`NF-e ${registro.numero || "—"}/${registro.serie || "—"} · ${registro.emitenteNome || "Emitente não informado"}`, 36, 22);
+    const xml = registro.totaisXml || {};
+    autoTable(pdf, { startY: 44, head: [["Informação", "Valor", "Informação", "Valor"]], body: [
+      ["Chave de acesso", registro.chaveNFe || "—", "Emissão", String(registro.dataEmissao || "").slice(0, 10) || "—"],
+      ["Emitente", `${registro.emitenteNome || "—"} · ${formatCNPJ(registro.emitenteCnpj)}`, "Destinatário", `${empresa.razaoSocial || "—"} · ${formatCNPJ(empresa.cnpj)}`],
+      ["UF origem → destino", `${registro.ufOrigem || "?"} → ${registro.ufDestino || "?"}`, "Valor total NF-e (XML)", dinheiro(xml.valor_total ?? registro.valorTotal)],
+      ["Produtos · frete · seguro", `${dinheiro(xml.valor_produtos)} · ${dinheiro(xml.valor_frete ?? registro.totais?.frete)} · ${dinheiro(xml.valor_seguro)}`, "Desconto · despesas · IPI", `${dinheiro(xml.valor_desconto)} · ${dinheiro(xml.valor_outras_desp)} · ${dinheiro(xml.valor_ipi ?? registro.totais?.ipi)}`],
+      ["ICMS próprio · ST do XML", `${dinheiro(xml.valor_icms)} · ${dinheiro(xml.valor_icms_st)}`, "ICMS calculado · DIFAL", `${dinheiro(registro.totais?.icmsCalcTotal)} · ${dinheiro(registro.totais?.difal)}`],
+    ], theme: "grid", styles: { fontSize: 7, cellPadding: 3 }, headStyles: { fillColor: [45, 55, 72] },
+      columnStyles: { 0: { fontStyle: "bold", cellWidth: 95 }, 2: { fontStyle: "bold", cellWidth: 95 } }, margin: { left: 36, right: 36 } });
+    autoTable(pdf, { startY: pdf.lastAutoTable.finalY + 9,
+      head: [["Seq.", "Código", "Descrição", "NCM", "CFOP/CST", "Quantidade", "Vl. produtos", "Alíq. XML", "ICMS XML", "ICMS próprio calc.", "Base ST", "ICMS-ST calc.", "DIFAL", "FCP"]],
+      body: (registro.produtos || []).map(item => [item.seq || "—", item.codigo || "—", String(item.descricao || "").slice(0, 38), item.ncm || "—",
+        `${item.cfop || "—"}/${item.cst || "—"}`, `${numeroSeguro(item.quantidade)} ${item.unidade || ""}`.trim(), dinheiro(item.valor_total),
+        item.xml?.aliquota_icms == null ? "—" : `${numeroSeguro(item.xml.aliquota_icms)}%`, dinheiro(item.xml?.valor_icms), dinheiro(item.valor_icms_proprio), dinheiro(item.base_st),
+        dinheiro(item.valor_icms_st), dinheiro(item.valor_difal), `${numeroSeguro(item.fcp_percentual)}% · ${dinheiro(item.valor_fcp)}`]),
+      theme: "striped", styles: { fontSize: 6, cellPadding: 2 }, headStyles: { fillColor: [26, 54, 93] },
+      margin: { left: 36, right: 36 }, didDrawPage: () => {
+        pdf.setFontSize(8); pdf.setTextColor(120);
+        pdf.text(`FiscoAI · Relatório consolidado · Página ${pdf.internal.getNumberOfPages()}`, largura - 36, pdf.internal.pageSize.getHeight() - 14, { align: "right" });
+      } });
+  });
+  pdf.save(`FiscoAI-Consolidado-${String(empresa.cnpj || "empresa").replace(/\D/g, "")}-${mesAno}.pdf`);
 }
 
 // ============================================================
@@ -4363,6 +4428,9 @@ export default function App(){
                               ))}
                             </tbody>
                           </table>
+                        </div>
+                        <div style={{display:"flex",justifyContent:"flex-end",marginTop:14}}>
+                          <button style={S.btn("pdf")} onClick={()=>exportarArquivoPDF(empSel,mesAtivo,regsDoMes)}>📄 Exportar Relatório Consolidado PDF</button>
                         </div>
                       </>
                     )}

@@ -26,6 +26,22 @@ export function descriptografarCertificado(valor: string): SegredoCertificado {
   return JSON.parse(Buffer.concat([cifra.update(conteudo), cifra.final()]).toString("utf8"));
 }
 
+export function extrairMaterialAssinatura(pfxBase64: string, senha: string) {
+  const bytes = Buffer.from(pfxBase64, "base64");
+  const asn1 = forge.asn1.fromDer(bytes.toString("binary"));
+  const p12 = forge.pkcs12.pkcs12FromAsn1(asn1, false, senha);
+  const keyBags = [
+    ...(p12.getBags({ bagType: forge.pki.oids.pkcs8ShroudedKeyBag })[forge.pki.oids.pkcs8ShroudedKeyBag] || []),
+    ...(p12.getBags({ bagType: forge.pki.oids.keyBag })[forge.pki.oids.keyBag] || []),
+  ];
+  const certBags = p12.getBags({ bagType: forge.pki.oids.certBag })[forge.pki.oids.certBag] || [];
+  if (!keyBags[0]?.key) throw new Error("A chave privada do certificado não está disponível para assinar a Ciência da Emissão.");
+  const chave = createPrivateKey(forge.pki.privateKeyToPem(keyBags[0].key));
+  const certificado = certBags.find(bag => bag.cert && new X509Certificate(forge.pki.certificateToPem(bag.cert)).checkPrivateKey(chave))?.cert;
+  if (!certificado) throw new Error("O certificado A1 não corresponde à chave privada.");
+  return { privateKey: forge.pki.privateKeyToPem(keyBags[0].key), certificate: forge.pki.certificateToPem(certificado) };
+}
+
 export function criptografarXml(bytes: Buffer): Buffer {
   const iv = randomBytes(12);
   const cifra = createCipheriv("aes-256-gcm", chaveCriptografia(), iv);

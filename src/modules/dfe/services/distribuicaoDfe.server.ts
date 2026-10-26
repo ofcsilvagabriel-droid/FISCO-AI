@@ -2,15 +2,23 @@ import { createHash, randomUUID } from "node:crypto";
 import { request } from "node:https";
 import { gunzipSync } from "node:zlib";
 import { DOMParser } from "@xmldom/xmldom";
-import { criptografarXml, descriptografarCertificado, prepararCertificado } from "./certificadoDfe.server";
+import { criptografarXml, descriptografarCertificado, extrairMaterialAssinatura, prepararCertificado } from "./certificadoDfe.server";
+import { SignedXml } from "xml-crypto";
 
 const ENDPOINT_DFE = "https://www1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx";
+const ENDPOINT_EVENTO = "https://www.nfe.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx";
 const BUCKET_DFE = "fiscoai-dfe-xml";
 const ESPERA_SEFAZ_MS = 60 * 60 * 1000;
 const LIMITE_RESPOSTA = 12 * 1024 * 1024;
 const LIMITE_XML = 10 * 1024 * 1024;
 const DURACAO_LOCK_MS = 10 * 60 * 1000;
 const MODELO_NFE = "55";
+const TIPO_EVENTO_CIENCIA = "210210";
+const ORGAO_AMBIENTE_NACIONAL = "91";
+const AMBIENTE_PRODUCAO = "1";
+const SEQUENCIAL_CIENCIA = "1";
+const SEQUENCIAL_ID_CIENCIA = "01";
+const VERSAO_EVENTO_CIENCIA = "1.00";
 const MAX_DOCUMENTOS_LOTE = 50;
 
 const primeiro = (raiz: Element | Document, nome: string) => raiz.getElementsByTagNameNS("*", nome).item(0);
@@ -26,12 +34,12 @@ export function montarConsultaDfe(cnpj: string, ultNsu: string): string {
     `</distDFeInt></nfeDadosMsg></nfeDistDFeInteresse></soap:Body></soap:Envelope>`;
 }
 
-function requisitarSefaz(corpo: string, tls: ReturnType<typeof prepararCertificado>["tls"]): Promise<string> {
+function requisitarSefaz(corpo: string, tls: ReturnType<typeof prepararCertificado>["tls"], action?: string, endpoint = ENDPOINT_DFE): Promise<string> {
   return new Promise((resolve, reject) => {
-    const url = new URL(ENDPOINT_DFE);
+    const url = new URL(endpoint);
     const req = request(url, {
       method: "POST", ...tls, timeout: 30000,
-      headers: { "Content-Type": "application/soap+xml; charset=utf-8", "Content-Length": Buffer.byteLength(corpo) },
+      headers: { "Content-Type": `application/soap+xml; charset=utf-8${action ? `; action=\"${action}\"` : ""}`, "Content-Length": Buffer.byteLength(corpo) },
     }, res => {
       const partes: Buffer[] = [];
       let tamanho = 0;
@@ -108,6 +116,85 @@ export function extrairNfeEntrada(xml: Buffer, schema: string, cnpjCertificado: 
   };
 }
 
+function extrairResumoNfe(xml: Buffer, schema: string) {
+  if (!/^resNFe/i.test(schema)) return null;
+  const doc = new DOMParser().parseFromString(xml.toString("utf8"), "text/xml");
+  if (!doc.documentElement || doc.documentElement.nodeName === "parsererror") return null;
+  const resumo = primeiro(doc, "resNFe");
+  const chave = texto(resumo || doc, "chNFe");
+  if (!/^\d{44}$/.test(chave) || chave.slice(20, 22) !== MODELO_NFE) return null;
+  return {
+    chave_acesso: chave,
+    emitente_nome: texto(resumo || doc, "xNome") || null,
+    emitente_cnpj: texto(resumo || doc, "CNPJ") || null,
+    numero_nfe: texto(resumo || doc, "nNF") || null,
+    serie_nfe: texto(resumo || doc, "serie") || null,
+    data_emissao: texto(resumo || doc, "dhEmi") || texto(resumo || doc, "dEmi") || null,
+    valor_total_xml: texto(resumo || doc, "vNF") || null,
+  };
+}
+
+function montarEventoCiencia(chave: string, cnpj: string, privateKey: string, certificate: string) {
+  const id = `ID${TIPO_EVENTO_CIENCIA}${chave}${SEQUENCIAL_ID_CIENCIA}`;
+  const evento = `<evento xmlns="http://www.portalfiscal.inf.br/nfe" versao="${VERSAO_EVENTO_CIENCIA}"><infEvento Id="${id}"><cOrgao>${ORGAO_AMBIENTE_NACIONAL}</cOrgao><tpAmb>${AMBIENTE_PRODUCAO}</tpAmb><CNPJ>${cnpj}</CNPJ><chNFe>${chave}</chNFe><dhEvento>${new Date().toISOString().replace(/Z$/, "+00:00")}</dhEvento><tpEvento>${TIPO_EVENTO_CIENCIA}</tpEvento><nSeqEvento>${SEQUENCIAL_CIENCIA}</nSeqEvento><verEvento>${VERSAO_EVENTO_CIENCIA}</verEvento><detEvento versao="${VERSAO_EVENTO_CIENCIA}"><descEvento>Ciencia da Operacao</descEvento></detEvento></infEvento></evento>`;
+  const assinatura = new SignedXml({ privateKey, publicCert: certificate,
+    signatureAlgorithm: "http://www.w3.org/2000/09/xmldsig#rsa-sha1",
+    canonicalizationAlgorithm: "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+  });
+  assinatura.addReference({ xpath: `//*[@Id='${id}']`, transforms: ["http://www.w3.org/2000/09/xmldsig#enveloped-signature", "http://www.w3.org/TR/2001/REC-xml-c14n-20010315"], digestAlgorithm: "http://www.w3.org/2000/09/xmldsig#sha1", uri: `#${id}` });
+  assinatura.computeSignature(evento, { location: { reference: "//*[local-name()='infEvento']", action: "after" } });
+  return assinatura.getSignedXml();
+}
+
+async function enviarCienciaEmissao(evento: string, tls: ReturnType<typeof prepararCertificado>["tls"]) {
+  const corpo = `<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"><soap:Body><nfeRecepcaoEvento xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeRecepcaoEvento4"><nfeDadosMsg>${evento}</nfeDadosMsg></nfeRecepcaoEvento></soap:Body></soap:Envelope>`;
+  const resposta = await requisitarSefaz(corpo, tls, "http://www.portalfiscal.inf.br/nfe/wsdl/NFeRecepcaoEvento4/nfeRecepcaoEvento", ENDPOINT_EVENTO);
+  const doc = new DOMParser().parseFromString(resposta, "text/xml");
+  const retorno = primeiro(doc, "retEnvEvento") || primeiro(doc, "retEvento") || doc;
+  const retEvento = primeiro(retorno, "retEvento") || retorno;
+  const cStat = texto(retEvento, "cStat") || texto(retorno, "cStat");
+  const motivo = texto(retEvento, "xMotivo") || texto(retorno, "xMotivo");
+  const protocolo = texto(retEvento, "nProt") || null;
+  if (!["135", "136", "155", "573"].includes(cStat)) throw new Error(`SEFAZ recusou a Ciência da Emissão (${cStat || "sem código"}): ${motivo || "retorno sem motivo"}`);
+  return { cStat, motivo, protocolo };
+}
+
+export async function registrarCienciaResumo(db: any, userId: string, cnpj: string, documento: any) {
+  if (!documento?.chave_acesso || documento.processamento_status === "ciencia_enviada") return { enviada: false };
+  const { data: certificado, error } = await db.from("fiscoai_certificados_dfe")
+    .select("segredo_criptografado,validade_fim").eq("user_id", userId).eq("cnpj", cnpj).single();
+  if (error || !certificado || new Date(certificado.validade_fim) <= new Date()) throw new Error("Certificado A1 ausente ou vencido para registrar a Ciência da Emissão.");
+  const segredo = descriptografarCertificado(certificado.segredo_criptografado);
+  const { tls } = prepararCertificado(segredo.pfx, segredo.senha);
+  const { privateKey, certificate } = extrairMaterialAssinatura(segredo.pfx, segredo.senha);
+  const evento = montarEventoCiencia(documento.chave_acesso, cnpj, privateKey, certificate);
+  const retorno = await enviarCienciaEmissao(evento, tls);
+  const { error: updateError } = await db.from("fiscoai_dfe_documentos").update({
+    processamento_status: "ciencia_enviada", processamento_erro: null,
+    ciencia_cstat: retorno.cStat, ciencia_motivo: retorno.motivo, ciencia_protocolo: retorno.protocolo,
+    ciencia_enviada_em: new Date().toISOString(),
+  }).eq("id", documento.id).eq("user_id", userId);
+  if (updateError) throw new Error(`Ciência registrada na SEFAZ, mas o histórico local falhou: ${updateError.message}`);
+  return { enviada: true, ...retorno };
+}
+
+export async function processarCienciasPendentes(db: any, userId?: string, cnpj?: string) {
+  let consulta = db.from("fiscoai_dfe_documentos").select("id,user_id,cnpj,chave_acesso,processamento_status")
+    .in("processamento_status", ["ciencia_pendente", "ciencia_erro"]).not("chave_acesso", "is", null).order("recebido_em").limit(20);
+  if (userId) consulta = consulta.eq("user_id", userId);
+  if (cnpj) consulta = consulta.eq("cnpj", cnpj);
+  const { data, error } = await consulta;
+  if (error) throw new Error(error.message);
+  const resultados = await Promise.allSettled((data || []).map((doc: any) => registrarCienciaResumo(db, doc.user_id, doc.cnpj, doc)));
+  for (let i = 0; i < resultados.length; i++) {
+    const resultado = resultados[i];
+    if (resultado.status === "rejected") {
+      await db.from("fiscoai_dfe_documentos").update({ processamento_status: "ciencia_erro", processamento_erro: String(resultado.reason?.message || resultado.reason).slice(0, 500) }).eq("id", data[i].id);
+    }
+  }
+  return { enviadas: resultados.filter(r => r.status === "fulfilled").length, falhas: resultados.filter(r => r.status === "rejected").length };
+}
+
 export async function consultarDistribuicaoDfe(db: any, userId: string, cnpj: string) {
   const { data: certificado, error: certErro } = await db.from("fiscoai_certificados_dfe")
     .select("segredo_criptografado,validade_fim").eq("user_id", userId).eq("cnpj", cnpj).single();
@@ -146,28 +233,39 @@ export async function consultarDistribuicaoDfe(db: any, userId: string, cnpj: st
       for (const item of retorno.documentos) {
         if (!/^[0-9]{15}$/.test(item.nsu) || !item.base64 || !item.schema) throw new Error("Documento DF-e inválido no lote.");
         const xml = gunzipSync(Buffer.from(item.base64, "base64"), { maxOutputLength: LIMITE_XML });
+        const resumoNfe = extrairResumoNfe(xml, item.schema);
         const detalhesNfe = extrairNfeEntrada(xml, item.schema, cnpj);
-        if (!detalhesNfe) { descartados++; continue; }
+        const detalhes = detalhesNfe || resumoNfe;
+        if (!detalhes) { descartados++; continue; }
         const hash = createHash("sha256").update(xml).digest("hex");
         const documento = new DOMParser().parseFromString(xml.toString("utf8"), "text/xml");
         if (!documento.documentElement || documento.documentElement.nodeName === "parsererror") throw new Error("XML inválido recebido da SEFAZ.");
-        const chave = texto(documento, "chNFe") || primeiro(documento, "infNFe")?.getAttribute("Id")?.replace(/^NFe/, "") || null;
-        const path = `${userId}/${cnpj}/${pastaCompetenciaEmissao(detalhesNfe.data_emissao)}/${item.nsu}-${hash}.enc`;
+        const chave = detalhesNfe ? (texto(documento, "chNFe") || primeiro(documento, "infNFe")?.getAttribute("Id")?.replace(/^NFe/, "") || null) : resumoNfe?.chave_acesso;
+        const path = `${userId}/${cnpj}/${pastaCompetenciaEmissao(detalhes.data_emissao)}/${item.nsu}-${hash}.enc`;
         const { error: arquivoErro } = await db.storage.from(BUCKET_DFE).upload(path, criptografarXml(xml), {
           contentType: "application/octet-stream", upsert: true,
         });
         if (arquivoErro) throw new Error(`Falha ao guardar XML recebido: ${arquivoErro.message}`);
-        const { error: registroErro } = await db.from("fiscoai_dfe_documentos").upsert({
+        const dadosRegistro = {
           user_id: userId, cnpj, nsu: item.nsu, schema_xml: item.schema,
           chave_acesso: chave, sha256: hash, storage_path: path,
-          processamento_status: detalhesNfe.uf_origem === detalhesNfe.uf_destino ? "interna" : "pendente",
+          processamento_status: detalhesNfe ? (detalhesNfe.uf_origem === detalhesNfe.uf_destino ? "interna" : "pendente") : "ciencia_pendente",
           processamento_erro: null,
-          ...detalhesNfe,
-        }, { onConflict: "user_id,cnpj,nsu,sha256", ignoreDuplicates: true });
+          ciencia_cstat: null, ciencia_motivo: null, ciencia_protocolo: null, ciencia_enviada_em: null,
+          ...detalhes,
+        };
+        const { data: existente } = chave ? await db.from("fiscoai_dfe_documentos").select("id,storage_path")
+          .eq("user_id", userId).eq("cnpj", cnpj).eq("chave_acesso", chave).maybeSingle() : { data: null };
+        const grava = existente
+          ? await db.from("fiscoai_dfe_documentos").update(dadosRegistro).eq("id", existente.id)
+          : await db.from("fiscoai_dfe_documentos").upsert(dadosRegistro, { onConflict: "user_id,cnpj,nsu,sha256", ignoreDuplicates: true });
+        const registroErro = grava.error;
         if (registroErro) throw new Error(`Falha ao indexar XML recebido: ${registroErro.message}`);
+        if (existente?.storage_path && existente.storage_path !== path) await db.storage.from(BUCKET_DFE).remove([existente.storage_path]);
         novos++;
       }
     }
+    const ciencias = await processarCienciasPendentes(db, userId, cnpj);
     const NSUAtualizado = retorno.ultNsu || adquirido.ult_nsu;
     const maxNsuAtualizado = retorno.maxNsu || cursor.max_nsu;
     const bloqueiaAte = ["137", "656"].includes(retorno.cStat)
@@ -179,7 +277,7 @@ export async function consultarDistribuicaoDfe(db: any, userId: string, cnpj: st
       ultimo_status: status, consultado_em: new Date().toISOString(), bloqueado_ate: bloqueadoAte,
     }).eq("user_id", userId).eq("cnpj", cnpj).eq("lock_token", token);
     if (gravacaoErro) throw new Error(gravacaoErro.message);
-    return { status, cStat: retorno.cStat, recebidos: novos, descartados, ultNsu: retorno.ultNsu || adquirido.ult_nsu,
+    return { status, cStat: retorno.cStat, recebidos: novos, descartados, ciencias, ultNsu: retorno.ultNsu || adquirido.ult_nsu,
       maxNsu: maxNsuAtualizado, bloqueadoAte: bloqueiaAte ? bloqueadoAte : null };
   } finally {
     await db.from("fiscoai_dfe_cursores").update({ lock_ate: new Date(0).toISOString(), lock_token: null })
