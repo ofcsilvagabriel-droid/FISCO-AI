@@ -155,7 +155,7 @@ async function enviarCienciaEmissao(evento: string, tls: ReturnType<typeof prepa
   const cStat = texto(retEvento, "cStat") || texto(retorno, "cStat");
   const motivo = texto(retEvento, "xMotivo") || texto(retorno, "xMotivo");
   const protocolo = texto(retEvento, "nProt") || null;
-  if (!["135", "136", "155", "573"].includes(cStat)) throw new Error(`SEFAZ recusou a Ciência da Emissão (${cStat || "sem código"}): ${motivo || "retorno sem motivo"}`);
+  if (!["135", "155", "573"].includes(cStat)) throw new Error(`SEFAZ recusou a Ciência da Emissão (${cStat || "sem código"}): ${motivo || "retorno sem motivo"}`);
   return { cStat, motivo, protocolo };
 }
 
