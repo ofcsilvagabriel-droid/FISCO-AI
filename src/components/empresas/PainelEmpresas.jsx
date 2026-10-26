@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { importarEmpresasFisco, listarEmpresasFisco, removerAcessoSefazEmpresa, salvarAcessoSefazEmpresa, salvarEmpresaFisco } from "@/modules/empresas/empresas.functions";
+import { importarEmpresasFisco, listarEmpresasFisco, removerAcessoSefazEmpresa, revelarAcessoSefazEmpresa, salvarAcessoSefazEmpresa, salvarEmpresaFisco } from "@/modules/empresas/empresas.functions";
 import { excluirCertificadoDfe, salvarCertificadoDfe } from "@/modules/dfe/services/certificados.functions";
 
 const REGIMES = [["SN", "Simples Nacional"], ["LP", "Lucro Presumido"], ["LR", "Lucro Real"], ["MEI", "MEI"], ["OUTRO", "Outro"]];
@@ -24,6 +24,8 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
   const [ocupado, setOcupado] = useState("");
   const [erro, setErro] = useState("");
   const [aviso, setAviso] = useState("");
+  const [acessoRevelado, setAcessoRevelado] = useState(null);
+  const [revelandoAcesso, setRevelandoAcesso] = useState(false);
 
   const carregar = useCallback(async () => {
     const lista = await listarEmpresasFisco();
@@ -47,6 +49,7 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
       busca_xml_automatica: empresa.busca_xml_automatica !== false,
     });
     setAcesso({ sistema: empresa.acesso_sefaz?.sistema || "Portal SEFAZ", endereco_portal: empresa.acesso_sefaz?.endereco_portal || "", usuario: "", senha: "", observacoes: empresa.acesso_sefaz?.observacoes || "" });
+    setAcessoRevelado(null);
     setArquivoA1(null); setSenhaA1(""); setNova(false);
   }, [empresa]);
 
@@ -70,9 +73,19 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
     try {
       await salvarAcessoSefazEmpresa({ data: { cnpj: empresa.cnpj, ...acesso } });
       await carregar(); setAcesso(atual => ({ ...atual, usuario: "", senha: "" }));
+      setAcessoRevelado(null);
       setAviso("Acesso da SEFAZ protegido e vinculado à empresa.");
     } catch (e) { setErro(erroTexto(e)); }
     finally { setOcupado(""); }
+  };
+
+  const revelarAcesso = async () => {
+    if (!empresa) return;
+    if (acessoRevelado) { setAcessoRevelado(null); return; }
+    setRevelandoAcesso(true); setErro("");
+    try { setAcessoRevelado(await revelarAcessoSefazEmpresa({ data: { cnpj: empresa.cnpj } })); }
+    catch (e) { setErro(erroTexto(e)); }
+    finally { setRevelandoAcesso(false); }
   };
 
   const importarCadastro = async evento => {
@@ -184,8 +197,15 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
           {empresa && <>
             <div style={S.card}>
               <div style={S.cardTitle}>Acesso ao portal da SEFAZ</div>
-              <p style={{ color: C.muted, fontSize: 11, marginTop: -4 }}>As credenciais são criptografadas no servidor. Por segurança, o usuário e a senha salvos não são exibidos.</p>
+              <p style={{ color: C.muted, fontSize: 11, marginTop: -4 }}>As credenciais ficam criptografadas. Revele-as somente quando precisar consultar este acesso.</p>
               {empresa.acesso_sefaz && <div role="status" style={{ color: "#34d399", fontSize: 12, marginBottom: 10 }}>Acesso cadastrado · {empresa.acesso_sefaz.sistema} · atualizado em {new Date(empresa.acesso_sefaz.atualizado_em).toLocaleDateString("pt-BR")}</div>}
+              {empresa.acesso_sefaz && <div style={{ marginBottom: 10 }}>
+                <button type="button" disabled={revelandoAcesso} onClick={revelarAcesso} style={S.btn("ghost")}>{revelandoAcesso ? "Carregando credenciais…" : acessoRevelado ? "Ocultar usuário e senha" : "Mostrar usuário e senha"}</button>
+                {acessoRevelado && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 10, marginTop: 10 }}>
+                  <label style={{ fontSize: 12 }}>Usuário<input readOnly value={acessoRevelado.usuario} style={inputStyle}/></label>
+                  <label style={{ fontSize: 12 }}>Senha<input readOnly type="text" value={acessoRevelado.senha} style={inputStyle}/></label>
+                </div>}
+              </div>}
               <form onSubmit={salvarAcesso} style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 10, alignItems: "end" }}>
                 <label style={{ fontSize: 12 }}>Sistema<input required maxLength={120} value={acesso.sistema} onChange={e => setAcesso(v => ({ ...v, sistema: e.target.value }))} style={inputStyle}/></label>
                 <label style={{ fontSize: 12 }}>Endereço do portal<input maxLength={500} value={acesso.endereco_portal} onChange={e => setAcesso(v => ({ ...v, endereco_portal: e.target.value }))} placeholder="https://…" style={inputStyle}/></label>

@@ -162,6 +162,20 @@ export const salvarAcessoSefazEmpresa = createServerFn({ method: "POST" })
     return { cnpj: data.cnpj, tem_acesso: true, atualizado_em: new Date().toISOString() };
   });
 
+export const revelarAcessoSefazEmpresa = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .validator((entrada: unknown) => cnpjInput.parse(entrada))
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { descriptografarSegredoEmpresa } = await import("./segredoEmpresa.server");
+    const { data: acesso, error } = await (supabaseAdmin as any).from("fiscoai_acessos_sefaz")
+      .select("segredo_criptografado").eq("user_id", context.userId).eq("empresa_cnpj", data.cnpj).maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!acesso?.segredo_criptografado) throw new Error("Não há credenciais cadastradas para esta empresa.");
+    const credenciais = JSON.parse(descriptografarSegredoEmpresa(acesso.segredo_criptografado));
+    return { usuario: String(credenciais.usuario || ""), senha: String(credenciais.senha || "") };
+  });
+
 export const removerAcessoSefazEmpresa = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .validator((entrada: unknown) => cnpjInput.parse(entrada))
