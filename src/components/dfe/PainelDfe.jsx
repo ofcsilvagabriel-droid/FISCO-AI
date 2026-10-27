@@ -275,8 +275,8 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
       <div role="status" style={{ color: `rgb(${aguardarSefaz ? C.yellow : monitoramentoAtivo ? C.green : C.yellow})`, fontSize: 12, fontWeight: 700, padding: "10px 0" }}>
         {lotePendente && !aguardarSefaz && monitoramentoAtivo ? "● Lotes pendentes da SEFAZ · a busca continuará em sequência" : aguardarSefaz ? `Próxima busca permitida após ${new Date(proximaBuscaAte).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}. Intervalo de duas horas; bloqueios da SEFAZ também são respeitados.` : monitoramentoAtivo ? "● Monitoramento automático ativo · buscas a cada duas horas quando não houver lotes pendentes" : "Busca pausada: confira a empresa e a validade do certificado."}
       </div>
-      <button type="button" onClick={buscarXmls} disabled={!selecionado || !empresaSelecionada?.certificado || new Date(empresaSelecionada.certificado.validade_fim).getTime() <= horaAtual || !empresaSelecionada?.ativa || buscando || aguardarSefaz} style={S.btn("primary")}>
-        {buscando ? "Buscando XMLs…" : "Buscar XMLs agora"}
+      <button type="button" onClick={buscarXmls} disabled={!selecionado || !empresaSelecionada?.certificado || new Date(empresaSelecionada.certificado.validade_fim).getTime() <= horaAtual || !empresaSelecionada?.ativa || buscando || aguardarSefaz} style={{ ...S.btn("primary"), opacity: aguardarSefaz ? 0.55 : 1, cursor: aguardarSefaz ? "not-allowed" : "pointer" }}>
+        {buscando ? "Buscando XMLs…" : aguardarSefaz ? `Buscar XMLs após ${new Date(proximaBuscaAte).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}` : "Buscar XMLs agora"}
       </button>
       {!empresas.some(empresa => empresa.certificado) && <button type="button" onClick={() => onNavigate?.("empresas")} style={S.btn("primary")}>Cadastrar empresa e certificado</button>}
     </div>
