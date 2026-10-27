@@ -421,10 +421,10 @@ export default function MemoriaObsidian({ empresasNomes = {} }) {
                 <div key={emp} style={{ marginBottom: 6 }}>
                   <div onClick={() => setAbertas((a) => ({ ...a, [emp]: !a[emp] }))}
                     style={{ cursor: "pointer", fontSize: 12, color: T.accent2, padding: "3px 0" }}>
-                    {abertas[emp] === false ? "▸" : "▾"} {empresasNomes[emp] || emp} ({lista.length} NCMs)
+                    {abertas[emp] === true ? "▾" : "▸"} {empresasNomes[emp] || emp} ({lista.length} NCMs)
                   </div>
                   <div style={{ overflow: "hidden", transition: "max-height 220ms ease-out, opacity 180ms ease-out",
-                    maxHeight: abertas[emp] === false ? 0 : lista.length * 30 + 10, opacity: abertas[emp] === false ? 0 : 1 }}>
+                    maxHeight: abertas[emp] === true ? lista.length * 30 + 10 : 0, opacity: abertas[emp] === true ? 1 : 0 }}>
                   {lista.map((h) => (
                     <div key={idDe(h)} onClick={() => setSel(idDe(h))} className={sel === idDe(h) ? "animate-fadeIn" : undefined}
                       style={{ cursor: "pointer", padding: "3px 8px", marginLeft: 12, borderRadius: 6, fontSize: 11.5,
