@@ -219,16 +219,23 @@ export async function consultarDistribuicaoDfe(db: any, userId: string, cnpj: st
   if (lockErro) throw new Error(lockErro.message);
   if (!adquirido) throw new Error("Consulta já em andamento ou temporariamente bloqueada para este CNPJ.");
 
+  let respostaSefazRecebida = false;
+  let bloqueioRegistrado = false;
+  let cursorAtualizado = false;
   try {
     const segredo = descriptografarCertificado(certificado.segredo_criptografado);
     const { tls } = prepararCertificado(segredo.pfx, segredo.senha);
     const resposta = await requisitarSefaz(montarConsultaDfe(cnpj, adquirido.ult_nsu), tls);
+    respostaSefazRecebida = true;
     const retorno = interpretarRetornoDfe(resposta);
     const status = `${retorno.cStat} — ${retorno.motivo}`.slice(0, 250);
     if (!["137", "138", "656"].includes(retorno.cStat)) {
-      await db.from("fiscoai_dfe_cursores").update({ ultimo_status: status,
-        bloqueado_ate: new Date(Date.now() + (retorno.cStat === "656" ? INTERVALO_MINIMO_BUSCA_DFE_MS : 15 * 60 * 1000)).toISOString(), consultado_em: new Date().toISOString(),
-      }).eq("user_id", userId).eq("cnpj", cnpj).eq("lock_token", token);
+      const bloqueioAte = new Date(Date.now() + INTERVALO_MINIMO_BUSCA_DFE_MS).toISOString();
+      const { data: bloqueio, error: bloqueioErro } = await db.from("fiscoai_dfe_cursores").update({
+        ultimo_status: status, bloqueado_ate: bloqueioAte, consultado_em: new Date().toISOString(),
+      }).eq("user_id", userId).eq("cnpj", cnpj).eq("lock_token", token).select("cnpj").maybeSingle();
+      if (bloqueioErro || !bloqueio) throw new Error(`SEFAZ retornou ${status}, mas o FiscoAI não conseguiu registrar a pausa de segurança.`);
+      bloqueioRegistrado = true;
       throw new Error(`SEFAZ: ${status}`);
     }
     let novos = 0;
@@ -276,13 +283,25 @@ export async function consultarDistribuicaoDfe(db: any, userId: string, cnpj: st
       || (retorno.cStat === "138" && NSUAtualizado === maxNsuAtualizado);
     const bloqueadoAte = bloqueiaAte
       ? new Date(Date.now() + ESPERA_SEFAZ_MS).toISOString() : new Date(0).toISOString();
-    const { error: gravacaoErro } = await db.from("fiscoai_dfe_cursores").update({
+    const { data: cursorSalvo, error: gravacaoErro } = await db.from("fiscoai_dfe_cursores").update({
       ult_nsu: NSUAtualizado, max_nsu: maxNsuAtualizado,
       ultimo_status: status, consultado_em: new Date().toISOString(), bloqueado_ate: bloqueadoAte,
-    }).eq("user_id", userId).eq("cnpj", cnpj).eq("lock_token", token);
-    if (gravacaoErro) throw new Error(gravacaoErro.message);
+    }).eq("user_id", userId).eq("cnpj", cnpj).eq("lock_token", token).select("cnpj").maybeSingle();
+    if (gravacaoErro || !cursorSalvo) throw new Error(gravacaoErro?.message || "O cursor NSU não foi atualizado após o lote.");
+    cursorAtualizado = true;
     return { status, cStat: retorno.cStat, recebidos: novos, descartados, ciencias, ultNsu: retorno.ultNsu || adquirido.ult_nsu,
       maxNsu: maxNsuAtualizado, bloqueadoAte: bloqueiaAte ? bloqueadoAte : null };
+  } catch (erro) {
+    if (respostaSefazRecebida && !cursorAtualizado && !bloqueioRegistrado) {
+      const mensagemErro = String(erro instanceof Error ? erro.message : erro).slice(0, 180);
+      const pausaAte = new Date(Date.now() + INTERVALO_MINIMO_BUSCA_DFE_MS).toISOString();
+      const { data: pausaRegistrada, error: pausaErro } = await db.from("fiscoai_dfe_cursores").update({
+        ultimo_status: `Falha ao processar resposta da SEFAZ: ${mensagemErro}`.slice(0, 250),
+        consultado_em: new Date().toISOString(), bloqueado_ate: pausaAte,
+      }).eq("user_id", userId).eq("cnpj", cnpj).eq("lock_token", token).select("cnpj").maybeSingle();
+      if (pausaErro || !pausaRegistrada) throw new Error(`${mensagemErro}. O FiscoAI também falhou ao registrar a pausa de duas horas${pausaErro ? `: ${pausaErro.message}` : "."}`);
+    }
+    throw erro;
   } finally {
     await db.from("fiscoai_dfe_cursores").update({ lock_ate: new Date(0).toISOString(), lock_token: null })
       .eq("user_id", userId).eq("cnpj", cnpj).eq("lock_token", token);
