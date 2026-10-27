@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { request } from "node:https";
 import { gunzipSync } from "node:zlib";
 import { DOMParser } from "@xmldom/xmldom";
-import { criptografarXml, descriptografarCertificado, extrairMaterialAssinatura, prepararCertificado } from "./certificadoDfe.server";
+import { criptografarXml, descriptografarCertificado, descriptografarXml, extrairMaterialAssinatura, prepararCertificado } from "./certificadoDfe.server";
 import { SignedXml } from "xml-crypto";
 import { existeLoteDfePendente, INTERVALO_MINIMO_BUSCA_DFE_MS } from "./distribuicaoDfe.shared";
 
@@ -161,13 +161,20 @@ function extrairMetadadosNfe(xml: Buffer, schema: string) {
 }
 
 export async function restaurarMetadadosDfeLegados(db: any, userId: string, cnpj: string) {
-  const { data: legados, error } = await db.from("fiscoai_dfe_documentos")
-    .select("id,nsu,schema_xml,sha256,storage_path,processamento_status")
-    .eq("user_id", userId).eq("cnpj", cnpj).is("processamento_erro", null)
-    .in("processamento_status", ["pendente", "importada", "interna", "descartada", "ciencia_pendente", "ciencia_enviada", "ciencia_erro"])
+  const buscarLegados = (consulta: any) => consulta
     .or("and(schema_xml.like.procNFe%,data_emissao.is.null),and(schema_xml.like.procNFe%,data_emissao.eq.),and(schema_xml.like.resNFe%,data_emissao.is.null),and(schema_xml.like.resNFe%,data_emissao.eq.)")
     .order("recebido_em", { ascending: true }).limit(100);
+  const selecionaLegados = () => db.from("fiscoai_dfe_documentos")
+    .select("id,nsu,schema_xml,sha256,storage_path,processamento_status,processamento_erro")
+    .eq("user_id", userId).eq("cnpj", cnpj);
+  const [semErro, erroRecuperacao] = await Promise.all([
+    buscarLegados(selecionaLegados().is("processamento_erro", null)
+      .in("processamento_status", ["pendente", "importada", "interna", "descartada", "ciencia_pendente", "ciencia_enviada", "ciencia_erro"])),
+    buscarLegados(selecionaLegados().like("processamento_erro", "Recuperação do XML legado:%").eq("processamento_status", "falha")),
+  ]);
+  const error = semErro.error || erroRecuperacao.error;
   if (error) throw new Error(`Falha ao localizar XMLs antigos sem metadados: ${error.message}`);
+  const legados = [...new Map([...(semErro.data || []), ...(erroRecuperacao.data || [])].map((doc: any) => [doc.id, doc])).values()].slice(0, 100);
 
   let restaurados = 0;
   for (const legado of legados || []) {
