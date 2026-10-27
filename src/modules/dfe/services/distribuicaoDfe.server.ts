@@ -112,7 +112,7 @@ export function extrairNfeEntrada(xml: Buffer, schema: string, cnpjCertificado: 
     emitente_cnpj: cnpjEmitente,
     uf_origem: ufEmitente,
     uf_destino: ufDestinatario,
-    data_emissao: texto(ide || doc, "dhEmi") || texto(ide || doc, "dEmi"),
+    data_emissao: texto(ide || doc, "dhEmi") || texto(ide || doc, "dEmi") || null,
     valor_total_xml: texto(primeiro(doc, "ICMSTot") || doc, "vNF") || null,
   };
 }
@@ -133,6 +133,102 @@ function extrairResumoNfe(xml: Buffer, schema: string) {
     data_emissao: texto(resumo || doc, "dhEmi") || texto(resumo || doc, "dEmi") || null,
     valor_total_xml: texto(resumo || doc, "vNF") || null,
   };
+}
+
+function extrairMetadadosNfe(xml: Buffer, schema: string) {
+  if (!/^procNFe/i.test(schema)) return null;
+  const doc = new DOMParser().parseFromString(xml.toString("utf8"), "text/xml");
+  if (!doc.documentElement || doc.documentElement.nodeName === "parsererror") return null;
+  const nfe = primeiro(doc, "NFe");
+  if (!nfe) return null;
+  const ide = primeiro(nfe, "ide");
+  const emit = primeiro(nfe, "emit");
+  const dest = primeiro(nfe, "dest");
+  const enderecoEmit = emit && primeiro(emit, "enderEmit");
+  const enderecoDest = dest && primeiro(dest, "enderDest");
+  return {
+    modelo: texto(ide || doc, "mod"),
+    destinatario_cnpj: texto(dest || doc, "CNPJ"),
+    emitente_cnpj: texto(emit || doc, "CNPJ"),
+    numero_nfe: texto(ide || doc, "nNF") || null,
+    serie_nfe: texto(ide || doc, "serie") || null,
+    emitente_nome: texto(emit || doc, "xNome") || null,
+    uf_origem: texto(enderecoEmit || emit || doc, "UF").toUpperCase() || null,
+    uf_destino: texto(enderecoDest || dest || doc, "UF").toUpperCase() || null,
+    data_emissao: texto(ide || doc, "dhEmi") || texto(ide || doc, "dEmi") || null,
+    valor_total_xml: texto(primeiro(doc, "ICMSTot") || doc, "vNF") || null,
+  };
+}
+
+export async function restaurarMetadadosDfeLegados(db: any, userId: string, cnpj: string) {
+  const { data: legados, error } = await db.from("fiscoai_dfe_documentos")
+    .select("id,nsu,schema_xml,sha256,storage_path,processamento_status")
+    .eq("user_id", userId).eq("cnpj", cnpj).is("processamento_erro", null)
+    .in("processamento_status", ["pendente", "importada", "interna", "descartada", "ciencia_pendente", "ciencia_enviada", "ciencia_erro"])
+    .or("and(schema_xml.like.procNFe%,data_emissao.is.null),and(schema_xml.like.procNFe%,data_emissao.eq.),and(schema_xml.like.resNFe%,data_emissao.is.null),and(schema_xml.like.resNFe%,data_emissao.eq.)")
+    .order("recebido_em", { ascending: true }).limit(100);
+  if (error) throw new Error(`Falha ao localizar XMLs antigos sem metadados: ${error.message}`);
+
+  let restaurados = 0;
+  for (const legado of legados || []) {
+    try {
+      const { data: arquivo, error: arquivoErro } = await db.storage.from(BUCKET_DFE).download(legado.storage_path);
+      if (arquivoErro || !arquivo) throw new Error("XML original não está disponível no armazenamento privado.");
+      const xml = descriptografarXml(Buffer.from(await arquivo.arrayBuffer()));
+      if (createHash("sha256").update(xml).digest("hex") !== legado.sha256) throw new Error("Integridade do XML comprometida.");
+
+      let atualizacao: Record<string, unknown> | null = null;
+      if (/^procNFe/i.test(legado.schema_xml)) {
+        const metadados = extrairMetadadosNfe(xml, legado.schema_xml);
+        if (!metadados) throw new Error("Não foi possível recuperar os dados da NF-e completa.");
+        const { modelo: modeloNfe, destinatario_cnpj: cnpjXmlDestinatario, ...dadosNfe } = metadados;
+        const cnpjDestinatario = baseCnpj(cnpjXmlDestinatario);
+        const cnpjEmitente = baseCnpj(metadados.emitente_cnpj);
+        const entradaElegivel = modeloNfe === MODELO_NFE
+          && cnpjDestinatario !== ""
+          && cnpjDestinatario === baseCnpj(cnpj)
+          && cnpjEmitente !== cnpjDestinatario
+          && /^[A-Z]{2}$/.test(metadados.uf_origem || "")
+          && /^[A-Z]{2}$/.test(metadados.uf_destino || "");
+        const processamentoStatus = !entradaElegivel
+          ? "descartada"
+          : legado.processamento_status === "importada"
+            ? "importada"
+            : metadados.uf_origem === metadados.uf_destino ? "interna" : "pendente";
+        if (entradaElegivel && !dadosNfe.data_emissao) {
+          throw new Error("NF-e sem data de emissão; requer conferência antes do cálculo.");
+        }
+        atualizacao = {
+          ...dadosNfe,
+          processamento_status: processamentoStatus,
+          processamento_erro: dadosNfe.data_emissao ? null : "XML sem data de emissão recuperável.",
+        };
+      } else {
+        const resumo = extrairResumoNfe(xml, legado.schema_xml);
+        if (!resumo) throw new Error("Não foi possível recuperar os dados do resumo da NF-e.");
+        atualizacao = {
+          chave_acesso: resumo.chave_acesso,
+          emitente_nome: resumo.emitente_nome,
+          emitente_cnpj: resumo.emitente_cnpj,
+          numero_nfe: resumo.numero_nfe,
+          serie_nfe: resumo.serie_nfe,
+          data_emissao: resumo.data_emissao,
+          valor_total_xml: resumo.valor_total_xml,
+          processamento_erro: resumo.data_emissao ? null : "Resumo recebido sem data de emissão no XML.",
+        };
+      }
+      const { error: atualizacaoErro } = await db.from("fiscoai_dfe_documentos").update(atualizacao)
+        .eq("id", legado.id).eq("user_id", userId).eq("cnpj", cnpj);
+      if (atualizacaoErro) throw new Error(atualizacaoErro.message);
+      restaurados++;
+    } catch (erro) {
+      const motivo = String(erro instanceof Error ? erro.message : erro).slice(0, 500);
+      await db.from("fiscoai_dfe_documentos").update({
+        processamento_status: "falha", processamento_erro: `Recuperação do XML legado: ${motivo}`,
+      }).eq("id", legado.id).eq("user_id", userId).eq("cnpj", cnpj);
+    }
+  }
+  return { restaurados, encontrados: legados?.length || 0 };
 }
 
 function montarEventoCiencia(chave: string, cnpj: string, privateKey: string, certificate: string) {
@@ -260,8 +356,10 @@ export async function consultarDistribuicaoDfe(db: any, userId: string, cnpj: st
         const dadosRegistro = {
           user_id: userId, cnpj, nsu: item.nsu, schema_xml: item.schema,
           chave_acesso: chave, sha256: hash, storage_path: path,
-          processamento_status: detalhesNfe ? (detalhesNfe.uf_origem === detalhesNfe.uf_destino ? "interna" : "pendente") : "ciencia_pendente",
-          processamento_erro: null,
+          processamento_status: detalhesNfe
+            ? !detalhesNfe.data_emissao ? "falha" : detalhesNfe.uf_origem === detalhesNfe.uf_destino ? "interna" : "pendente"
+            : "ciencia_pendente",
+          processamento_erro: detalhesNfe && !detalhesNfe.data_emissao ? "NF-e completa sem data de emissão recuperável." : null,
           ciencia_cstat: null, ciencia_motivo: null, ciencia_protocolo: null, ciencia_enviada_em: null,
           ...detalhes,
         };

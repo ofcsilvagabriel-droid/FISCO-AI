@@ -37,7 +37,7 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
   const [competencia, setCompetencia] = useState(competenciaAtual);
   const [selecionado, setSelecionado] = useState("");
   const [documentos, setDocumentos] = useState([]);
-  const [indicadores, setIndicadores] = useState({ total: 0, importadas: 0, internas: 0, pendentes: 0, falhas: 0, resumos: 0, falhasCiencia: 0, monitoradas: 0, ultimaBusca: null });
+  const [indicadores, setIndicadores] = useState({ total: 0, importadas: 0, internas: 0, pendentes: 0, falhas: 0, semCompetencia: 0, resumos: 0, falhasCiencia: 0, monitoradas: 0, ultimaBusca: null });
   const [pagina, setPagina] = useState(0);
   const [temMais, setTemMais] = useState(false);
   const [cursor, setCursor] = useState(null);
@@ -63,7 +63,7 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
   }, []);
 
   const atualizarDocumentos = useCallback(async (alvo, paginaAlvo = 0, acrescentar = false) => {
-    if (!alvo) { setDocumentos([]); setCursor(null); setTemMais(false); setIndicadores({ total: 0, importadas: 0, internas: 0, pendentes: 0, falhas: 0, resumos: 0, falhasCiencia: 0, monitoradas: 0, ultimaBusca: null }); return { documentos: [], pendentes: [], cursor: null, temMais: false }; }
+    if (!alvo) { setDocumentos([]); setCursor(null); setTemMais(false); setIndicadores({ total: 0, importadas: 0, internas: 0, pendentes: 0, falhas: 0, semCompetencia: 0, resumos: 0, falhasCiencia: 0, monitoradas: 0, ultimaBusca: null }); return { documentos: [], pendentes: [], cursor: null, temMais: false }; }
     const resultado = await listarDocumentosDfe({ data: { cnpj: alvo, competencia, offset: paginaAlvo * PAGE_SIZE } });
     setDocumentos(atual => {
       const base = acrescentar ? atual : [];
@@ -93,6 +93,9 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
             const parsed = parsearNFe(baixado.xml);
             if (parsed.erro || !parsed.nota || !parsed.produtos.length) {
               atualizacoes.push({ id: documento.id, status: "falha", erro: parsed.erro || "XML sem itens de NF-e." });
+              totais.falhas++;
+            } else if (!parsed.nota.data_emissao) {
+              atualizacoes.push({ id: documento.id, status: "falha", erro: "NF-e sem data de emissão; não foi incluída em competência incorreta." });
               totais.falhas++;
             } else if (!notaEntradaElegivel(parsed.nota, alvo)) {
               atualizacoes.push({ id: documento.id, status: "descartada" });
@@ -250,6 +253,7 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
     ["Aguardando processamento", indicadores.pendentes, "Serão processadas ao abrir o FiscoAI", C.yellow],
     ["Resumos aguardando XML", indicadores.resumos, indicadores.falhasCiencia ? `${indicadores.falhasCiencia} Ciência(s) serão tentadas novamente automaticamente` : "Ciência da Emissão automática registrada quando elegível", C.yellow],
     ["Com falha", indicadores.falhas, "Exigem nova tentativa", C.yellow],
+    ["Sem competência", indicadores.semCompetencia, "Metadados recuperados automaticamente quando possível", C.yellow],
     ["Empresas monitoradas", indicadores.monitoradas, "Com certificado válido", C.green],
     ["Última busca", periodoFmt(indicadores.ultimaBusca), cursor?.ultimo_status || "Busca automática na nuvem", C.blue],
   ];

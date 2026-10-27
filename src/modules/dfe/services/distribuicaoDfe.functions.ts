@@ -29,25 +29,32 @@ export const listarDocumentosDfe = createServerFn({ method: "POST" })
   .validator((entrada: unknown) => listaInput.parse(entrada))
   .handler(async ({ data, context }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { restaurarMetadadosDfeLegados } = await import("./distribuicaoDfe.server");
     const db = supabaseAdmin as any;
+    await restaurarMetadadosDfeLegados(db, context.userId, data.cnpj);
     const [ano, mes] = data.competencia.split("-").map(Number);
     const inicio = `${data.competencia}-01`;
     const proximoMes = new Date(Date.UTC(ano, mes, 1)).toISOString().slice(0, 10);
     const documentosDaCompetencia = (consulta: any) => consulta.gte("data_emissao", inicio).lt("data_emissao", proximoMes);
+    const filtrarNfes = (consulta: any) => consulta.or("schema_xml.like.procNFe%,schema_xml.like.resNFe%");
     const contarDocumentos = (status?: string) => {
-      let consulta = db.from("fiscoai_dfe_documentos").select("id", { count: "exact", head: true })
-        .eq("user_id", context.userId).eq("cnpj", data.cnpj);
+      let consulta = filtrarNfes(db.from("fiscoai_dfe_documentos").select("id", { count: "exact", head: true })
+        .eq("user_id", context.userId).eq("cnpj", data.cnpj));
       if (status) consulta = consulta.eq("processamento_status", status);
       return documentosDaCompetencia(consulta);
     };
-    const [pendentesResult, documentosResult, cursorResult, totalResult, importadasResult, internasResult, pendentesMesResult, falhasResult, resumosResult, falhasCienciaResult, empresasResult, certificadosResult] = await Promise.all([
+    const semCompetencia = (consulta: any) => consulta.or("and(schema_xml.like.procNFe%,data_emissao.is.null),and(schema_xml.like.procNFe%,data_emissao.eq.),and(schema_xml.like.resNFe%,data_emissao.is.null),and(schema_xml.like.resNFe%,data_emissao.eq.)");
+    const documentosDaTela = (consulta: any) => consulta.or(
+      `and(schema_xml.like.procNFe%,data_emissao.gte.${inicio},data_emissao.lt.${proximoMes}),and(schema_xml.like.resNFe%,data_emissao.gte.${inicio},data_emissao.lt.${proximoMes}),and(schema_xml.like.procNFe%,data_emissao.is.null),and(schema_xml.like.procNFe%,data_emissao.eq.),and(schema_xml.like.resNFe%,data_emissao.is.null),and(schema_xml.like.resNFe%,data_emissao.eq.)`,
+    );
+    const [pendentesResult, documentosResult, cursorResult, totalResult, importadasResult, internasResult, pendentesMesResult, falhasResult, semCompetenciaResult, resumosResult, falhasCienciaResult, empresasResult, certificadosResult] = await Promise.all([
       db.from("fiscoai_dfe_documentos")
         .select("id,cnpj,nsu,schema_xml,chave_acesso,sha256,recebido_em,processamento_status,processamento_erro,numero_nfe,serie_nfe,emitente_nome,emitente_cnpj,uf_origem,uf_destino,data_emissao,valor_total_xml,ciencia_cstat,ciencia_motivo,ciencia_protocolo,ciencia_enviada_em")
         .eq("user_id", context.userId).eq("cnpj", data.cnpj)
         .like("schema_xml", "procNFe%")
         .eq("processamento_status", "pendente")
         .order("nsu", { ascending: true }).limit(100),
-      documentosDaCompetencia(db.from("fiscoai_dfe_documentos")
+      documentosDaTela(db.from("fiscoai_dfe_documentos")
         .select("id,cnpj,nsu,schema_xml,chave_acesso,sha256,recebido_em,processamento_status,processamento_erro,numero_nfe,serie_nfe,emitente_nome,emitente_cnpj,uf_origem,uf_destino,data_emissao,valor_total_xml,ciencia_cstat,ciencia_motivo,ciencia_protocolo,ciencia_enviada_em")
         .eq("user_id", context.userId).eq("cnpj", data.cnpj)
         .in("processamento_status", ["importada", "interna", "falha", "pendente", "descartada", "ciencia_pendente", "ciencia_enviada", "ciencia_erro"])
@@ -57,13 +64,14 @@ export const listarDocumentosDfe = createServerFn({ method: "POST" })
         .select("ult_nsu,max_nsu,bloqueado_ate,ultimo_status,consultado_em")
         .eq("user_id", context.userId).eq("cnpj", data.cnpj).maybeSingle(),
       contarDocumentos(), contarDocumentos("importada"), contarDocumentos("interna"), contarDocumentos("pendente"), contarDocumentos("falha"),
+      semCompetencia(db.from("fiscoai_dfe_documentos").select("id", { count: "exact", head: true }).eq("user_id", context.userId).eq("cnpj", data.cnpj)),
       documentosDaCompetencia(db.from("fiscoai_dfe_documentos").select("id", { count: "exact", head: true })
         .eq("user_id", context.userId).eq("cnpj", data.cnpj).like("schema_xml", "resNFe%").in("processamento_status", ["ciencia_pendente", "ciencia_enviada", "ciencia_erro"])),
       contarDocumentos("ciencia_erro"),
       db.from("fiscoai_empresas").select("cnpj").eq("user_id", context.userId).eq("ativa", true).eq("busca_xml_automatica", true),
       db.from("fiscoai_certificados_dfe").select("cnpj,validade_fim").eq("user_id", context.userId),
     ]);
-    const falha = [pendentesResult, documentosResult, cursorResult, totalResult, importadasResult, internasResult, pendentesMesResult, falhasResult, resumosResult, falhasCienciaResult, empresasResult, certificadosResult].find(resultado => resultado.error)?.error;
+    const falha = [pendentesResult, documentosResult, cursorResult, totalResult, importadasResult, internasResult, pendentesMesResult, falhasResult, semCompetenciaResult, resumosResult, falhasCienciaResult, empresasResult, certificadosResult].find(resultado => resultado.error)?.error;
     if (falha) {
       throw new Error(falha.message);
     }
@@ -82,6 +90,7 @@ export const listarDocumentosDfe = createServerFn({ method: "POST" })
         internas: internasResult.count ?? 0,
         pendentes: pendentesMesResult.count ?? 0,
         falhas: falhasResult.count ?? 0,
+        semCompetencia: semCompetenciaResult.count ?? 0,
         resumos: resumosResult.count ?? 0,
         falhasCiencia: falhasCienciaResult.count ?? 0,
         monitoradas,
