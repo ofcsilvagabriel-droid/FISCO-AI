@@ -4,12 +4,12 @@ import { gunzipSync } from "node:zlib";
 import { DOMParser } from "@xmldom/xmldom";
 import { criptografarXml, descriptografarCertificado, extrairMaterialAssinatura, prepararCertificado } from "./certificadoDfe.server";
 import { SignedXml } from "xml-crypto";
+import { existeLoteDfePendente, INTERVALO_MINIMO_BUSCA_DFE_MS } from "./distribuicaoDfe.shared";
 
 const ENDPOINT_DFE = "https://www1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx";
 const ENDPOINT_EVENTO = "https://www.nfe.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx";
 const BUCKET_DFE = "fiscoai-dfe-xml";
 const ESPERA_SEFAZ_MS = 60 * 60 * 1000;
-export const INTERVALO_MINIMO_BUSCA_DFE_MS = 75 * 60 * 1000;
 const LIMITE_RESPOSTA = 12 * 1024 * 1024;
 const LIMITE_XML = 10 * 1024 * 1024;
 const DURACAO_LOCK_MS = 10 * 60 * 1000;
@@ -209,7 +209,7 @@ export async function consultarDistribuicaoDfe(db: any, userId: string, cnpj: st
   if (new Date(cursor.bloqueado_ate) > agora) throw new Error(`Aguarde até ${new Date(cursor.bloqueado_ate).toLocaleString("pt-BR")}: intervalo exigido pela SEFAZ.`);
   const ultimaConsultaMs = cursor.consultado_em ? new Date(cursor.consultado_em).getTime() : 0;
   const proximaBuscaMs = ultimaConsultaMs + INTERVALO_MINIMO_BUSCA_DFE_MS;
-  if (proximaBuscaMs > agora.getTime()) throw new Error(`Próxima busca automática permitida após ${new Date(proximaBuscaMs).toLocaleString("pt-BR")}.`);
+  if (!existeLoteDfePendente(cursor) && proximaBuscaMs > agora.getTime()) throw new Error(`Próxima busca automática permitida após ${new Date(proximaBuscaMs).toLocaleString("pt-BR")}.`);
 
   const token = randomUUID();
   const { data: adquirido, error: lockErro } = await db.from("fiscoai_dfe_cursores")
@@ -227,7 +227,7 @@ export async function consultarDistribuicaoDfe(db: any, userId: string, cnpj: st
     const status = `${retorno.cStat} — ${retorno.motivo}`.slice(0, 250);
     if (!["137", "138", "656"].includes(retorno.cStat)) {
       await db.from("fiscoai_dfe_cursores").update({ ultimo_status: status,
-        bloqueado_ate: new Date(Date.now() + (retorno.cStat === "656" ? ESPERA_SEFAZ_MS : 15 * 60 * 1000)).toISOString(), consultado_em: new Date().toISOString(),
+        bloqueado_ate: new Date(Date.now() + (retorno.cStat === "656" ? INTERVALO_MINIMO_BUSCA_DFE_MS : 15 * 60 * 1000)).toISOString(), consultado_em: new Date().toISOString(),
       }).eq("user_id", userId).eq("cnpj", cnpj).eq("lock_token", token);
       throw new Error(`SEFAZ: ${status}`);
     }

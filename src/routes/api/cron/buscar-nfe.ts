@@ -11,9 +11,10 @@ export const Route = createFileRoute("/api/cron/buscar-nfe")({
       return Response.json({ erro: "Não autorizado." }, { status: 401 });
     }
 
-    const [{ supabaseAdmin }, { consultarDistribuicaoDfe, processarCienciasPendentes, INTERVALO_MINIMO_BUSCA_DFE_MS }] = await Promise.all([
+    const [{ supabaseAdmin }, { consultarDistribuicaoDfe, processarCienciasPendentes }, { existeLoteDfePendente, INTERVALO_MINIMO_BUSCA_DFE_MS }] = await Promise.all([
       import("@/integrations/supabase/client.server"),
       import("@/modules/dfe/services/distribuicaoDfe.server"),
+      import("@/modules/dfe/services/distribuicaoDfe.shared"),
     ]);
 
     const db = supabaseAdmin as any;
@@ -33,10 +34,11 @@ export const Route = createFileRoute("/api/cron/buscar-nfe")({
     const elegiveis = (certificados || []).filter((certificado: any) => {
       const chave = `${certificado.user_id}:${certificado.cnpj}`;
       const cursor = cursorPorChave.get(chave);
-      return chavesEmpresa.has(chave)
+      return chavesEmpresa.has(chave) && !!cursor
         && new Date(certificado.validade_fim).getTime() > Date.now()
-        && (!cursor || (new Date(cursor.bloqueado_ate).getTime() <= Date.now()
-          && (!cursor.consultado_em || Date.now() - new Date(cursor.consultado_em).getTime() >= INTERVALO_MINIMO_BUSCA_DFE_MS)));
+        && new Date(cursor.bloqueado_ate).getTime() <= Date.now()
+        && (existeLoteDfePendente(cursor) || !cursor.consultado_em
+          || Date.now() - new Date(cursor.consultado_em).getTime() >= INTERVALO_MINIMO_BUSCA_DFE_MS);
     }).sort((a: any, b: any) => {
       const cursorA = cursorPorChave.get(`${a.user_id}:${a.cnpj}`);
       const cursorB = cursorPorChave.get(`${b.user_id}:${b.cnpj}`);
