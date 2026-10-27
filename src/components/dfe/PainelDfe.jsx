@@ -42,6 +42,7 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
   const [temMais, setTemMais] = useState(false);
   const [cursor, setCursor] = useState(null);
   const [ocupado, setOcupado] = useState("");
+  const [buscando, setBuscando] = useState(false);
   const [horaAtual, setHoraAtual] = useState(Date.now());
   const [aviso, setAviso] = useState("");
   const [erro, setErro] = useState("");
@@ -219,6 +220,20 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
     finally { setOcupado(""); }
   };
 
+  const buscarXmls = async () => {
+    if (!selecionado || buscando || proximaBuscaAte > Date.now()) return;
+    setBuscando(true); setErro(""); setAviso("Consultando novos XMLs na SEFAZ…");
+    try {
+      const busca = await consultarDfe({ data: { cnpj: selecionado } });
+      const totais = await processarPendentes(selecionado, true);
+      await atualizarDocumentos(selecionado, 0);
+      setAviso(`Busca concluída (${busca.status}). ${busca.recebidos || 0} documento(s) recebido(s); ${totais.importadas} NF-e importada(s) para cálculo e ${totais.internas} arquivada(s) da mesma UF.`);
+    } catch (e) {
+      setAviso(""); setErro(mensagem(e));
+      await atualizarDocumentos(selecionado, 0).catch(() => {});
+    } finally { setBuscando(false); }
+  };
+
   const bloqueadoAte = cursor?.bloqueado_ate ? new Date(cursor.bloqueado_ate).getTime() : 0;
   const lotePendente = existeLoteDfePendente(cursor);
   const intervaloAte = !lotePendente && cursor?.consultado_em ? new Date(cursor.consultado_em).getTime() + INTERVALO_MINIMO_BUSCA_DFE_MS : 0;
@@ -258,8 +273,11 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
         <input type="month" value={competencia} onChange={e => { if (!e.target.value) return; setCompetencia(e.target.value); setPagina(0); setDocumentos([]); }} style={{ ...S.inp, width: "100%" }} />
       </label>
       <div role="status" style={{ color: `rgb(${aguardarSefaz ? C.yellow : monitoramentoAtivo ? C.green : C.yellow})`, fontSize: 12, fontWeight: 700, padding: "10px 0" }}>
-        {lotePendente && !aguardarSefaz && monitoramentoAtivo ? "● Lotes pendentes da SEFAZ · a busca continuará em sequência" : aguardarSefaz ? `Próxima busca automática após ${new Date(proximaBuscaAte).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}. Intervalo de duas horas; bloqueios da SEFAZ também são respeitados.` : monitoramentoAtivo ? "● Monitoramento automático ativo · buscas a cada duas horas quando não houver lotes pendentes" : "Busca pausada: confira a empresa e a validade do certificado."}
+        {lotePendente && !aguardarSefaz && monitoramentoAtivo ? "● Lotes pendentes da SEFAZ · a busca continuará em sequência" : aguardarSefaz ? `Próxima busca permitida após ${new Date(proximaBuscaAte).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}. Intervalo de duas horas; bloqueios da SEFAZ também são respeitados.` : monitoramentoAtivo ? "● Monitoramento automático ativo · buscas a cada duas horas quando não houver lotes pendentes" : "Busca pausada: confira a empresa e a validade do certificado."}
       </div>
+      <button type="button" onClick={buscarXmls} disabled={!selecionado || !empresaSelecionada?.certificado || new Date(empresaSelecionada.certificado.validade_fim).getTime() <= horaAtual || !empresaSelecionada?.ativa || buscando || aguardarSefaz} style={S.btn("primary")}>
+        {buscando ? "Buscando XMLs…" : "Buscar XMLs agora"}
+      </button>
       {!empresas.some(empresa => empresa.certificado) && <button type="button" onClick={() => onNavigate?.("empresas")} style={S.btn("primary")}>Cadastrar empresa e certificado</button>}
     </div>
 
