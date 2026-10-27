@@ -196,7 +196,7 @@ export async function processarCienciasPendentes(db: any, userId?: string, cnpj?
   return { enviadas: resultados.filter(r => r.status === "fulfilled").length, falhas: resultados.filter(r => r.status === "rejected").length };
 }
 
-export async function consultarDistribuicaoDfe(db: any, userId: string, cnpj: string) {
+export async function consultarDistribuicaoDfe(db: any, userId: string, cnpj: string, manual = false) {
   const { data: certificado, error: certErro } = await db.from("fiscoai_certificados_dfe")
     .select("segredo_criptografado,validade_fim").eq("user_id", userId).eq("cnpj", cnpj).single();
   if (certErro || !certificado) throw new Error("Certificado deste CNPJ não encontrado.");
@@ -209,7 +209,7 @@ export async function consultarDistribuicaoDfe(db: any, userId: string, cnpj: st
   if (new Date(cursor.bloqueado_ate) > agora) throw new Error(`Aguarde até ${new Date(cursor.bloqueado_ate).toLocaleString("pt-BR")}: intervalo exigido pela SEFAZ.`);
   const ultimaConsultaMs = cursor.consultado_em ? new Date(cursor.consultado_em).getTime() : 0;
   const proximaBuscaMs = ultimaConsultaMs + INTERVALO_MINIMO_BUSCA_DFE_MS;
-  if (!existeLoteDfePendente(cursor) && proximaBuscaMs > agora.getTime()) throw new Error(`Próxima busca automática permitida após ${new Date(proximaBuscaMs).toLocaleString("pt-BR")}.`);
+  if (!manual && !existeLoteDfePendente(cursor) && proximaBuscaMs > agora.getTime()) throw new Error(`Próxima busca automática permitida após ${new Date(proximaBuscaMs).toLocaleString("pt-BR")}.`);
 
   const token = randomUUID();
   const { data: adquirido, error: lockErro } = await db.from("fiscoai_dfe_cursores")

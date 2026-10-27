@@ -221,10 +221,10 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
   };
 
   const buscarXmls = async () => {
-    if (!selecionado || buscando || proximaBuscaAte > Date.now()) return;
+    if (!selecionado || buscando) return;
     setBuscando(true); setErro(""); setAviso("Consultando novos XMLs na SEFAZ…");
     try {
-      const busca = await consultarDfe({ data: { cnpj: selecionado } });
+      const busca = await consultarDfe({ data: { cnpj: selecionado, manual: true } });
       const totais = await processarPendentes(selecionado, true);
       await atualizarDocumentos(selecionado, 0);
       setAviso(`Busca concluída (${busca.status}). ${busca.recebidos || 0} documento(s) recebido(s); ${totais.importadas} NF-e importada(s) para cálculo e ${totais.internas} arquivada(s) da mesma UF.`);
@@ -273,10 +273,10 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
         <input type="month" value={competencia} onChange={e => { if (!e.target.value) return; setCompetencia(e.target.value); setPagina(0); setDocumentos([]); }} style={{ ...S.inp, width: "100%" }} />
       </label>
       <div role="status" style={{ color: `rgb(${aguardarSefaz ? C.yellow : monitoramentoAtivo ? C.green : C.yellow})`, fontSize: 12, fontWeight: 700, padding: "10px 0" }}>
-        {lotePendente && !aguardarSefaz && monitoramentoAtivo ? "● Lotes pendentes da SEFAZ · a busca continuará em sequência" : aguardarSefaz ? `Próxima busca permitida após ${new Date(proximaBuscaAte).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}. Intervalo de duas horas; bloqueios da SEFAZ também são respeitados.` : monitoramentoAtivo ? "● Monitoramento automático ativo · buscas a cada duas horas quando não houver lotes pendentes" : "Busca pausada: confira a empresa e a validade do certificado."}
+        {bloqueadoAte > horaAtual ? `Pausa da SEFAZ até ${new Date(bloqueadoAte).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}. O botão pode ser acionado, mas a consulta só será enviada após a pausa.` : lotePendente && monitoramentoAtivo ? "● Lotes pendentes da SEFAZ · a busca continuará em sequência" : aguardarSefaz ? `Próxima busca automática após ${new Date(proximaBuscaAte).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}. A busca manual pode ser acionada agora.` : monitoramentoAtivo ? "● Monitoramento automático ativo · buscas a cada duas horas quando não houver lotes pendentes" : "Busca pausada: confira a empresa e a validade do certificado."}
       </div>
-      <button type="button" onClick={buscarXmls} disabled={!selecionado || !empresaSelecionada?.certificado || new Date(empresaSelecionada.certificado.validade_fim).getTime() <= horaAtual || !empresaSelecionada?.ativa || buscando || aguardarSefaz} style={{ ...S.btn("primary"), opacity: aguardarSefaz ? 0.55 : 1, cursor: aguardarSefaz ? "not-allowed" : "pointer" }}>
-        {buscando ? "Buscando XMLs…" : aguardarSefaz ? `Buscar XMLs após ${new Date(proximaBuscaAte).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}` : "Buscar XMLs agora"}
+      <button type="button" onClick={buscarXmls} disabled={!selecionado || !empresaSelecionada?.certificado || new Date(empresaSelecionada.certificado.validade_fim).getTime() <= horaAtual || !empresaSelecionada?.ativa || buscando} style={S.btn("primary")}>
+        {buscando ? "Buscando XMLs…" : "Buscar XMLs agora"}
       </button>
       {!empresas.some(empresa => empresa.certificado) && <button type="button" onClick={() => onNavigate?.("empresas")} style={S.btn("primary")}>Cadastrar empresa e certificado</button>}
     </div>

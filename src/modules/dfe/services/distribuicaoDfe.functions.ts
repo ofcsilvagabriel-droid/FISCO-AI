@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 
-const cnpjInput = z.object({ cnpj: z.string().regex(/^[0-9]{14}$/) });
+const cnpjInput = z.object({ cnpj: z.string().regex(/^[0-9]{14}$/), manual: z.boolean().optional() });
 const listaInput = z.object({
   cnpj: z.string().regex(/^[0-9]{14}$/),
   competencia: z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/),
@@ -21,7 +21,7 @@ export const consultarDfe = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { consultarDistribuicaoDfe } = await import("./distribuicaoDfe.server");
-    return consultarDistribuicaoDfe(supabaseAdmin, context.userId, data.cnpj);
+    return consultarDistribuicaoDfe(supabaseAdmin, context.userId, data.cnpj, data.manual === true);
   });
 
 export const listarDocumentosDfe = createServerFn({ method: "POST" })
