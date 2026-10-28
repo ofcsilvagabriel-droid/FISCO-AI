@@ -89,6 +89,11 @@ export function extrairNfeEntrada(xml: Buffer, schema: string, cnpjCertificado: 
   if (!doc.documentElement || doc.documentElement.nodeName === "parsererror") return null;
   const nfe = primeiro(doc, "NFe");
   if (!nfe) return null;
+  const infNfe = primeiro(nfe, "infNFe");
+  const protocolo = primeiro(doc, "protNFe");
+  const chave = infNfe?.getAttribute("Id")?.replace(/^NFe/, "") || "";
+  if (!infNfe || !primeiro(infNfe, "det") || !protocolo || texto(protocolo, "cStat") !== "100"
+    || !/^\d{44}$/.test(chave) || texto(protocolo, "chNFe") !== chave || !texto(protocolo, "nProt")) return null;
   const ide = primeiro(nfe, "ide");
   const emit = primeiro(nfe, "emit");
   const dest = primeiro(nfe, "dest");
@@ -355,6 +360,10 @@ export async function consultarDistribuicaoDfe(db: any, userId: string, cnpj: st
         const documento = new DOMParser().parseFromString(xml.toString("utf8"), "text/xml");
         if (!documento.documentElement || documento.documentElement.nodeName === "parsererror") throw new Error("XML inválido recebido da SEFAZ.");
         const chave = detalhesNfe ? (texto(documento, "chNFe") || primeiro(documento, "infNFe")?.getAttribute("Id")?.replace(/^NFe/, "") || null) : resumoNfe?.chave_acesso;
+        const { data: existente } = chave ? await db.from("fiscoai_dfe_documentos").select("id,storage_path,schema_xml")
+          .eq("user_id", userId).eq("cnpj", cnpj).eq("chave_acesso", chave).maybeSingle() : { data: null };
+        // Repeated summaries must not reset the recovery state or replace a complete NF-e.
+        if (existente && !detalhesNfe) continue;
         const path = `${userId}/${cnpj}/${pastaCompetenciaEmissao(detalhes.data_emissao)}/${item.nsu}-${hash}.enc`;
         const { error: arquivoErro } = await db.storage.from(BUCKET_DFE).upload(path, criptografarXml(xml), {
           contentType: "application/octet-stream", upsert: true,
@@ -370,8 +379,6 @@ export async function consultarDistribuicaoDfe(db: any, userId: string, cnpj: st
           ciencia_cstat: null, ciencia_motivo: null, ciencia_protocolo: null, ciencia_enviada_em: null,
           ...detalhes,
         };
-        const { data: existente } = chave ? await db.from("fiscoai_dfe_documentos").select("id,storage_path")
-          .eq("user_id", userId).eq("cnpj", cnpj).eq("chave_acesso", chave).maybeSingle() : { data: null };
         const grava = existente
           ? await db.from("fiscoai_dfe_documentos").update(dadosRegistro).eq("id", existente.id)
           : await db.from("fiscoai_dfe_documentos").upsert(dadosRegistro, { onConflict: "user_id,cnpj,nsu,sha256", ignoreDuplicates: true });

@@ -5,7 +5,7 @@ const MAX_CNPJS_POR_EXECUCAO = 5;
 export const Route = createFileRoute("/api/cron/buscar-nfe")({
   server: {
     handlers: {
-      POST: async ({ request }) => {
+      GET: async ({ request }) => {
     const segredo = process.env.CRON_SECRET;
     if (!segredo || request.headers.get("authorization") !== `Bearer ${segredo}`) {
       return Response.json({ erro: "Não autorizado." }, { status: 401 });
@@ -30,7 +30,7 @@ export const Route = createFileRoute("/api/cron/buscar-nfe")({
     }
 
     const chavesEmpresa = new Set((empresas || []).map((empresa: any) => `${empresa.user_id}:${empresa.cnpj}`));
-    const cursorPorChave = new Map((cursores || []).map((cursor: any) => [`${cursor.user_id}:${cursor.cnpj}`, cursor]));
+    const cursorPorChave = new Map<string, any>((cursores || []).map((cursor: any) => [`${cursor.user_id}:${cursor.cnpj}`, cursor]));
     const elegiveis = (certificados || []).filter((certificado: any) => {
       const chave = `${certificado.user_id}:${certificado.cnpj}`;
       const cursor = cursorPorChave.get(chave);

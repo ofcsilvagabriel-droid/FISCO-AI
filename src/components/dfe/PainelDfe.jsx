@@ -169,7 +169,7 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
         const busca = await consultarDfe({ data: { cnpj: selecionado } });
         const totais = await processarPendentes(selecionado, true);
         await atualizarDocumentos(selecionado, 0);
-        if (ativo) setAviso(`Busca automática concluída. ${totais.importadas} NF-e interestadual(is) importada(s) para cálculo; ${totais.internas} NF-e da mesma UF arquivada(s). ${busca.descartados || 0} documento(s) fora do filtro foram descartados.`);
+        if (ativo) setAviso(`Busca automática concluída. ${totais.importadas} XML(s) completo(s) importado(s) para cálculo; ${totais.internas} XML(s) completo(s) da mesma UF arquivado(s).`);
       } else if (empresa?.busca_xml_automatica && aguardando) {
         setAviso(`Próxima busca automática após ${new Date(proximaBuscaMs).toLocaleString("pt-BR")}.`);
       }
@@ -230,7 +230,7 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
       const busca = await consultarDfe({ data: { cnpj: selecionado, manual: true } });
       const totais = await processarPendentes(selecionado, true);
       await atualizarDocumentos(selecionado, 0);
-      setAviso(`Busca concluída (${busca.status}). ${busca.recebidos || 0} documento(s) recebido(s); ${totais.importadas} NF-e importada(s) para cálculo e ${totais.internas} arquivada(s) da mesma UF.`);
+      setAviso(`Busca concluída (${busca.status}). ${totais.importadas + totais.internas} XML(s) completo(s) processado(s); ${totais.importadas} NF-e importada(s) para cálculo e ${totais.internas} arquivada(s) da mesma UF.`);
     } catch (e) {
       setAviso(""); setErro(mensagem(e));
       await atualizarDocumentos(selecionado, 0).catch(() => {});
@@ -247,11 +247,11 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
 
   const periodoFmt = data => data ? new Date(data).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "Sem busca registrada";
   const stats = [
-    ["NF-e localizadas", indicadores.total, "XMLs completos e resumos da SEFAZ", C.blue],
+    ["XMLs completos", indicadores.total, "NF-e completas disponíveis", C.blue],
     ["Importadas para cálculo", indicadores.importadas, "Entradas de outras UFs", C.green],
     ["Da mesma UF", indicadores.internas, "Guardadas sem cálculo de ICMS", C.blue],
     ["Aguardando processamento", indicadores.pendentes, "Serão processadas ao abrir o FiscoAI", C.yellow],
-    ["Resumos aguardando XML", indicadores.resumos, indicadores.falhasCiencia ? `${indicadores.falhasCiencia} Ciência(s) serão tentadas novamente automaticamente` : "Ciência da Emissão automática registrada quando elegível", C.yellow],
+    ["XMLs em recuperação", indicadores.resumos, indicadores.falhasCiencia ? `${indicadores.falhasCiencia} tentativa(s) de recuperação com falha` : "Aguardando XML completo da SEFAZ", C.yellow],
     ["Com falha", indicadores.falhas, "Exigem nova tentativa", C.yellow],
     ["Sem competência", indicadores.semCompetencia, "Metadados recuperados automaticamente quando possível", C.yellow],
     ["Empresas monitoradas", indicadores.monitoradas, "Com certificado válido", C.green],
@@ -295,7 +295,7 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
 
     <div style={S.card}>
       <div style={S.cardTitle}>Notas da competência · {rotuloCompetencia(competencia)}</div>
-      {!selecionado ? <div style={{ color: C.muted }}>Selecione uma empresa com certificado cadastrado.</div> : !documentos.length ? <div style={{ color: C.muted }}>Nenhuma NF-e ou resumo localizado nesta competência. A busca cobre os documentos ainda disponíveis na distribuição da SEFAZ.</div> : documentosPorPasta.map(([ano, meses]) => <section key={ano} style={{ border: `1px solid ${C.border}`, borderRadius: 10, padding: "8px 12px", marginBottom: 10 }}>
+      {!selecionado ? <div style={{ color: C.muted }}>Selecione uma empresa com certificado cadastrado.</div> : !documentos.length ? <div style={{ color: C.muted }}>Nenhum XML completo localizado nesta competência. A busca cobre os documentos ainda disponíveis na distribuição da SEFAZ.</div> : documentosPorPasta.map(([ano, meses]) => <section key={ano} style={{ border: `1px solid ${C.border}`, borderRadius: 10, padding: "8px 12px", marginBottom: 10 }}>
         <div style={{ fontSize: 14, fontWeight: 800, color: C.text, padding: "5px 0 9px" }}>📁 {ano}</div>
         {meses.map(([mes, itens]) => <div key={mes} style={{ borderTop: `1px solid ${C.border}`, paddingTop: 7, marginTop: 5 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: C.muted, padding: "2px 0 4px" }}>📂 {rotuloCompetencia(mes)} <span style={{ fontWeight: 400 }}>({itens.length})</span></div>

@@ -27,10 +27,10 @@ describe("Distribuição DF-e", () => {
 
   it("extrai NF-e completa destinada à empresa do certificado, seja interna ou interestadual", () => {
     const xml = (ufEmitente: string, ufDestinatario: string, cnpjDestinatario = "12345678000276") => Buffer.from(
-      `<nfeProc><NFe><infNFe><ide><mod>55</mod><nNF>7</nNF><serie>1</serie><dhEmi>2026-01-10T10:00:00-03:00</dhEmi></ide>` +
+      `<nfeProc><NFe><infNFe Id="NFe29260112345678000195550010000000071000000017"><ide><mod>55</mod><nNF>7</nNF><serie>1</serie><dhEmi>2026-01-10T10:00:00-03:00</dhEmi></ide>` +
       `<emit><CNPJ>98765432000100</CNPJ><xNome>Fornecedor de teste</xNome><enderEmit><UF>${ufEmitente}</UF></enderEmit></emit>` +
       `<dest><CNPJ>${cnpjDestinatario}</CNPJ><enderDest><UF>${ufDestinatario}</UF></enderDest></dest>` +
-      `<total><ICMSTot><vNF>123.45</vNF></ICMSTot></total></infNFe></NFe></nfeProc>`,
+      `<det nItem="1"><prod><cProd>1</cProd></prod></det><total><ICMSTot><vNF>123.45</vNF></ICMSTot></total></infNFe></NFe><protNFe><infProt><chNFe>29260112345678000195550010000000071000000017</chNFe><cStat>100</cStat><nProt>123456789</nProt></infProt></protNFe></nfeProc>`,
     );
     const cnpjCertificado = "12345678000195";
     expect(extrairNfeEntrada(xml("SP", "BA"), "procNFe_v4.00.xsd", cnpjCertificado)).toMatchObject({
@@ -38,6 +38,7 @@ describe("Distribuição DF-e", () => {
     });
     expect(extrairNfeEntrada(xml("BA", "BA"), "procNFe_v4.00.xsd", cnpjCertificado)).toMatchObject({ uf_origem: "BA", uf_destino: "BA" });
     expect(extrairNfeEntrada(xml("SP", "BA"), "resNFe_v1.01.xsd", cnpjCertificado)).toBeNull();
+    expect(extrairNfeEntrada(Buffer.from(xml("SP", "BA").toString().replace("<nProt>123456789</nProt>", "")), "procNFe_v4.00.xsd", cnpjCertificado)).toBeNull();
     expect(extrairNfeEntrada(xml("SP", "BA", "87654321000100"), "procNFe_v4.00.xsd", cnpjCertificado)).toBeNull();
   });
 });

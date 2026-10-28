@@ -36,16 +36,16 @@ export const listarDocumentosDfe = createServerFn({ method: "POST" })
     const inicio = `${data.competencia}-01`;
     const proximoMes = new Date(Date.UTC(ano, mes, 1)).toISOString().slice(0, 10);
     const documentosDaCompetencia = (consulta: any) => consulta.gte("data_emissao", inicio).lt("data_emissao", proximoMes);
-    const filtrarNfes = (consulta: any) => consulta.or("schema_xml.like.procNFe%,schema_xml.like.resNFe%");
+    const filtrarNfes = (consulta: any) => consulta.like("schema_xml", "procNFe%");
     const contarDocumentos = (status?: string) => {
       let consulta = filtrarNfes(db.from("fiscoai_dfe_documentos").select("id", { count: "exact", head: true })
         .eq("user_id", context.userId).eq("cnpj", data.cnpj));
       if (status) consulta = consulta.eq("processamento_status", status);
       return documentosDaCompetencia(consulta);
     };
-    const semCompetencia = (consulta: any) => consulta.or("and(schema_xml.like.procNFe%,data_emissao.is.null),and(schema_xml.like.procNFe%,data_emissao.eq.),and(schema_xml.like.resNFe%,data_emissao.is.null),and(schema_xml.like.resNFe%,data_emissao.eq.)");
+    const semCompetencia = (consulta: any) => consulta.or("and(schema_xml.like.procNFe%,data_emissao.is.null),and(schema_xml.like.procNFe%,data_emissao.eq.)");
     const documentosDaTela = (consulta: any) => consulta.or(
-      `and(schema_xml.like.procNFe%,data_emissao.gte.${inicio},data_emissao.lt.${proximoMes}),and(schema_xml.like.resNFe%,data_emissao.gte.${inicio},data_emissao.lt.${proximoMes}),and(schema_xml.like.procNFe%,data_emissao.is.null),and(schema_xml.like.procNFe%,data_emissao.eq.),and(schema_xml.like.resNFe%,data_emissao.is.null),and(schema_xml.like.resNFe%,data_emissao.eq.)`,
+      `and(schema_xml.like.procNFe%,data_emissao.gte.${inicio},data_emissao.lt.${proximoMes}),and(schema_xml.like.procNFe%,data_emissao.is.null),and(schema_xml.like.procNFe%,data_emissao.eq.)`,
     );
     const [pendentesResult, documentosResult, cursorResult, totalResult, importadasResult, internasResult, pendentesMesResult, falhasResult, semCompetenciaResult, resumosResult, falhasCienciaResult, empresasResult, certificadosResult] = await Promise.all([
       db.from("fiscoai_dfe_documentos")
@@ -57,7 +57,8 @@ export const listarDocumentosDfe = createServerFn({ method: "POST" })
       documentosDaTela(db.from("fiscoai_dfe_documentos")
         .select("id,cnpj,nsu,schema_xml,chave_acesso,sha256,recebido_em,processamento_status,processamento_erro,numero_nfe,serie_nfe,emitente_nome,emitente_cnpj,uf_origem,uf_destino,data_emissao,valor_total_xml,ciencia_cstat,ciencia_motivo,ciencia_protocolo,ciencia_enviada_em")
         .eq("user_id", context.userId).eq("cnpj", data.cnpj)
-        .in("processamento_status", ["importada", "interna", "falha", "pendente", "descartada", "ciencia_pendente", "ciencia_enviada", "ciencia_erro"])
+        .like("schema_xml", "procNFe%")
+        .in("processamento_status", ["importada", "interna", "falha", "pendente", "descartada"])
         .order("data_emissao", { ascending: false, nullsFirst: false }).order("nsu", { ascending: false })
         .range(data.offset, data.offset + 99)),
       db.from("fiscoai_dfe_cursores")
@@ -106,6 +107,11 @@ export const marcarDocumentosDfe = createServerFn({ method: "POST" })
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const db = supabaseAdmin as any;
     const ids = [...new Set(data.items.map(item => item.id))];
+    const { data: completos, error: leituraErro } = await db.from("fiscoai_dfe_documentos")
+      .select("id,schema_xml").eq("user_id", context.userId).in("id", ids);
+    if (leituraErro || completos?.length !== ids.length || completos.some((doc: any) => !/^procNFe/i.test(doc.schema_xml))) {
+      throw new Error("Somente XMLs completos da sua conta podem ser processados.");
+    }
     const resultados = await Promise.all(data.items.map(item => db.from("fiscoai_dfe_documentos").update({
       processamento_status: item.status,
       processamento_erro: item.status === "falha" ? (item.erro || "Falha no processamento da NF-e.") : null,
@@ -125,6 +131,7 @@ export const baixarDocumentoDfe = createServerFn({ method: "POST" })
       .select("id,cnpj,nsu,schema_xml,chave_acesso,storage_path,sha256")
       .eq("id", data.id).eq("user_id", context.userId).single();
     if (error || !documento) throw new Error("Documento não encontrado nesta conta.");
+    if (!/^procNFe/i.test(documento.schema_xml)) throw new Error("O XML completo desta NF-e ainda não está disponível.");
     const { data: arquivo, error: arquivoErro } = await db.storage.from("fiscoai-dfe-xml").download(documento.storage_path);
     if (arquivoErro || !arquivo) throw new Error("XML não está disponível no armazenamento privado.");
     const { descriptografarXml } = await import("./certificadoDfe.server");
