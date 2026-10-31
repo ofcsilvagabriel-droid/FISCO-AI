@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "tanstack-start",
   "crons": [
-    { "path": "/api/cron/buscar-nfe", "schedule": "0 8 * * *" },
-    { "path": "/api/cron/buscar-nfe", "schedule": "0 2 * * *" }
+    { "path": "/api/cron/buscar-nfe", "schedule": "0 6 * * *" },
+    { "path": "/api/cron/buscar-nfe", "schedule": "0 16 * * *" }
   ]
 }
