@@ -687,6 +687,21 @@ export async function consultarDistribuicaoDfePorChave(
     throw new Error("Certificado vencido. Cadastre um novo A1.");
 
   const agora = new Date();
+  const { data: cursor, error: cursorErro } = await db
+    .from("fiscoai_dfe_cursores")
+    .select("bloqueado_ate,lock_ate,ultimo_status")
+    .eq("user_id", userId)
+    .eq("cnpj", cnpj)
+    .maybeSingle();
+  if (cursorErro) throw new Error(cursorErro.message);
+  if (
+    cursor?.ultimo_status?.startsWith("656") &&
+    new Date(cursor.bloqueado_ate).getTime() > agora.getTime()
+  ) {
+    throw new Error(
+      `A SEFAZ bloqueou novas consultas por consumo indevido. Tente após ${new Date(cursor.bloqueado_ate).toLocaleString("pt-BR", { timeZone: "America/Bahia" })}.`,
+    );
+  }
   const token = randomUUID();
   const { data: bloqueio, error: bloqueioErro } = await db
     .from("fiscoai_dfe_cursores")
@@ -697,12 +712,15 @@ export async function consultarDistribuicaoDfePorChave(
     .eq("user_id", userId)
     .eq("cnpj", cnpj)
     .lt("lock_ate", agora.toISOString())
-    .lt("bloqueado_ate", agora.toISOString())
     .select("cnpj")
     .maybeSingle();
   if (bloqueioErro) throw new Error(bloqueioErro.message);
   if (!bloqueio)
-    throw new Error("Consulta já em andamento ou CNPJ temporariamente bloqueado pela SEFAZ.");
+    throw new Error(
+      cursor?.lock_ate && new Date(cursor.lock_ate).getTime() > agora.getTime()
+        ? `Já existe uma consulta em andamento para este CNPJ. A trava expira até ${new Date(cursor.lock_ate).toLocaleString("pt-BR", { timeZone: "America/Bahia" })}.`
+        : "Não foi possível iniciar a consulta por chave. Atualize a página e tente novamente.",
+    );
 
   const tentativaId = await iniciarTentativaDistribuicao(db, userId, cnpj, "CONSULTAR_POR_CHAVE");
   let tentativaFinalizada = false;
