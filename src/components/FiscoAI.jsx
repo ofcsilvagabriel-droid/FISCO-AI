@@ -34,7 +34,6 @@ import { parsearNFe } from "@/modules/xml/services/parsearNFe";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 
-import DanfeConsulta from "@/modules/danfe/components/DanfeConsulta";
 import { COLORS as DS_COLORS, TYPOGRAPHY as DS_TYPO } from "@/styles/designSystem";
 import { StatCard } from "@/components/ui/Stat";
 
@@ -3671,8 +3670,7 @@ export default function App(){
   const TABS=[
     {id:"importar",icon:"📂",label:"Importar NF-e"},
     {id:"empresas",icon:"🏢",label:"Empresas"},
-    {id:"dfe",icon:"📥",label:"Central de XMLs"},
-    {id:"danfe",icon:"📥",label:"Consultar DANFE"},
+    {id:"dfe",icon:"🗂️",label:"Docs Fiscais"},
     {id:"analise",icon:"🔍",label:"Análise Fiscal",disabled:!analisado},
     {id:"calculo",icon:"🧾",label:"Cálculo ICMS",disabled:!analisado},
     {id:"calculadora",icon:"🧮",label:"Calculadora ST"},
@@ -3810,11 +3808,6 @@ export default function App(){
               </div>
             </div>
           </>
-        )}
-
-        {/* ═══════════ CONSULTAR DANFE (API MeuDanfe) ═══════════ */}
-        {tab==="danfe"&&(
-          <DanfeConsulta/>
         )}
 
         {/* ═══════════ ANÁLISE ═══════════ */}

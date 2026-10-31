@@ -288,7 +288,7 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
 
     <div style={{ ...S.card, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 12, alignItems: "end" }}>
       <div style={{ gridColumn: "1 / -1" }}>
-        <div style={S.cardTitle}>Central de XMLs</div>
+        <div style={S.cardTitle}>Documentos Fiscais</div>
         <p style={{ color: C.muted, fontSize: 12, margin: "4px 0 0" }}>A busca roda automaticamente na nuvem, mesmo com seu computador desligado. XMLs completos de entrada das duas UFs ficam guardados; só notas de outra UF são importadas para cálculo de ICMS.</p>
       </div>
       <label style={{ fontSize: 12 }}>Empresa

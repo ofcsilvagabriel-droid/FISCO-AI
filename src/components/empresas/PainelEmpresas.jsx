@@ -237,7 +237,7 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
                 {Object.entries(contagemEmpresa(empresa.cnpj)).map(([rotulo, total]) => <div key={rotulo} style={{ background: "rgba(255,255,255,0.03)", borderRadius: 7, padding: "9px 12px" }}><div style={{ fontSize: 10, color: C.muted }}>{rotulo === "arquivo" ? "NF-e no Arquivo Fiscal" : rotulo === "historico" ? "Notas no Histórico" : "Decisões na Memória Protegida"}</div><div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginTop: 3 }}>{total}</div></div>)}
               </div>
               <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 10 }}>
-                {[["arquivo", "Arquivo Fiscal"], ["historico", "Histórico"], ["obsidian", "Memória Protegida"], ["dfe", "NF-e e certificados"]].map(([tab, label]) => <button key={tab} onClick={() => onNavigate?.(tab)} style={S.btn("ghost")}>{label}</button>)}
+                {[["arquivo", "Arquivo Fiscal"], ["historico", "Histórico"], ["obsidian", "Memória Protegida"], ["dfe", "Docs Fiscais"]].map(([tab, label]) => <button key={tab} onClick={() => onNavigate?.(tab)} style={S.btn("ghost")}>{label}</button>)}
               </div>
             </div>
           </>}
