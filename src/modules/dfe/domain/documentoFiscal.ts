@@ -48,13 +48,6 @@ export const documentoFiscalSchema = z.object({
   statusProcessamento: z.enum(statusProcessamentoDocumentoFiscal),
 });
 
-export const solicitacaoRecuperacaoXmlSchema = z.object({
-  empresaCnpj: z.string().regex(/^[0-9]{14}$/),
-  chaveAcesso: z.string().regex(/^[0-9]{44}$/),
-  provedor: z.literal("FISCALAPI").default("FISCALAPI"),
-  manifestar: z.literal(false).default(false),
-});
-
 export const artefatoDocumentoFiscalSchema = z.object({
   documentoId: z.string().uuid(),
   empresaCnpj: z.string().regex(/^[0-9]{14}$/),
@@ -71,7 +64,6 @@ export type TipoArtefatoDocumentoFiscal = (typeof tiposArtefatoDocumentoFiscal)[
 export type StatusProcessamentoDocumentoFiscal =
   (typeof statusProcessamentoDocumentoFiscal)[number];
 export type DocumentoFiscal = z.infer<typeof documentoFiscalSchema>;
-export type SolicitacaoRecuperacaoXml = z.infer<typeof solicitacaoRecuperacaoXmlSchema>;
 
 export function competenciaDaEmissao(dataEmissao: string | null | undefined): string | null {
   const competencia = String(dataEmissao || "").slice(0, 7);

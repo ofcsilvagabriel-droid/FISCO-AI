@@ -1,26 +1,49 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { randomBytes } from "node:crypto";
-import { criptografarCertificado, criptografarXml, descriptografarCertificado, descriptografarXml, inspecionarCertificado } from "../certificadoDfe.server";
-import { extrairNfeEntrada, interpretarRetornoDfe, montarConsultaDfe } from "../distribuicaoDfe.server";
-import { existeLoteDfePendente, INTERVALO_MINIMO_BUSCA_DFE_MS, resolverCursoresDfe } from "../distribuicaoDfe.shared";
+import {
+  criptografarCertificado,
+  criptografarXml,
+  descriptografarCertificado,
+  descriptografarXml,
+  inspecionarCertificado,
+} from "../certificadoDfe.server";
+import {
+  extrairNfeEntrada,
+  interpretarRetornoDfe,
+  montarConsultaDfe,
+  montarConsultaDfePorChave,
+} from "../distribuicaoDfe.server";
+import {
+  existeLoteDfePendente,
+  INTERVALO_MINIMO_BUSCA_DFE_MS,
+  resolverCursoresDfe,
+} from "../distribuicaoDfe.shared";
 
 describe("Distribuição DF-e", () => {
   it("usa intervalo de duas horas quando a distribuição está em dia e não bloqueia a continuação de lotes", () => {
     expect(INTERVALO_MINIMO_BUSCA_DFE_MS).toBe(2 * 60 * 60 * 1000);
-    expect(existeLoteDfePendente({ ult_nsu: "000000000000050", max_nsu: "000000000000051" })).toBe(true);
-    expect(existeLoteDfePendente({ ult_nsu: "000000000000051", max_nsu: "000000000000051" })).toBe(false);
+    expect(existeLoteDfePendente({ ult_nsu: "000000000000050", max_nsu: "000000000000051" })).toBe(
+      true,
+    );
+    expect(existeLoteDfePendente({ ult_nsu: "000000000000051", max_nsu: "000000000000051" })).toBe(
+      false,
+    );
     expect(existeLoteDfePendente(null)).toBe(false);
   });
 
   it("nunca regride o cursor NSU nem aceita um maxNSU menor que o lote processado", () => {
-    expect(resolverCursoresDfe(
-      { ult_nsu: "000000000000050", max_nsu: "000000000000060" },
-      { ultNsu: "000000000000040", maxNsu: "000000000000045" },
-    )).toEqual({ ultNsu: "000000000000050", maxNsu: "000000000000050" });
-    expect(resolverCursoresDfe(
-      { ult_nsu: "000000000000050", max_nsu: "000000000000060" },
-      { ultNsu: "000000000000070", maxNsu: "000000000000065" },
-    )).toEqual({ ultNsu: "000000000000070", maxNsu: "000000000000070" });
+    expect(
+      resolverCursoresDfe(
+        { ult_nsu: "000000000000050", max_nsu: "000000000000060" },
+        { ultNsu: "000000000000040", maxNsu: "000000000000045" },
+      ),
+    ).toEqual({ ultNsu: "000000000000050", maxNsu: "000000000000050" });
+    expect(
+      resolverCursoresDfe(
+        { ult_nsu: "000000000000050", max_nsu: "000000000000060" },
+        { ultNsu: "000000000000070", maxNsu: "000000000000065" },
+      ),
+    ).toEqual({ ultNsu: "000000000000070", maxNsu: "000000000000070" });
   });
 
   it("monta consulta NSU sem dados de nota fixos", () => {
@@ -30,33 +53,64 @@ describe("Distribuição DF-e", () => {
     expect(() => montarConsultaDfe("<cnpj>", "0")).toThrow();
   });
 
+  it("monta consulta oficial por chave sem alterar o cursor NSU", () => {
+    const chave = "29260112345678000195550010000000071000000017";
+    const xml = montarConsultaDfePorChave("12345678000195", chave);
+    expect(xml).toContain("<consChNFe>");
+    expect(xml).toContain(`<chNFe>${chave}</chNFe>`);
+    expect(xml).not.toContain("<distNSU>");
+    expect(() => montarConsultaDfePorChave("123", chave)).toThrow();
+  });
+
   it("interpreta status e documentos compactados", () => {
     const resposta = `<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"><soap:Body><retDistDFeInt xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.01"><cStat>138</cStat><xMotivo>Documento localizado</xMotivo><ultNSU>000000000000002</ultNSU><maxNSU>000000000000003</maxNSU><loteDistDFeInt><docZip NSU="000000000000002" schema="resNFe_v1.01.xsd">H4sI</docZip></loteDistDFeInt></retDistDFeInt></soap:Body></soap:Envelope>`;
-    expect(interpretarRetornoDfe(resposta)).toMatchObject({ cStat: "138", ultNsu: "000000000000002", documentos: [{ nsu: "000000000000002", schema: "resNFe_v1.01.xsd" }] });
+    expect(interpretarRetornoDfe(resposta)).toMatchObject({
+      cStat: "138",
+      ultNsu: "000000000000002",
+      documentos: [{ nsu: "000000000000002", schema: "resNFe_v1.01.xsd" }],
+    });
     expect(() => interpretarRetornoDfe("<erro/>")).toThrow();
   });
 
   it("extrai NF-e completa destinada à empresa do certificado, seja interna ou interestadual", () => {
-    const xml = (ufEmitente: string, ufDestinatario: string, cnpjDestinatario = "12345678000276") => Buffer.from(
-      `<nfeProc><NFe><infNFe Id="NFe29260112345678000195550010000000071000000017"><ide><mod>55</mod><nNF>7</nNF><serie>1</serie><dhEmi>2026-01-10T10:00:00-03:00</dhEmi></ide>` +
-      `<emit><CNPJ>98765432000100</CNPJ><xNome>Fornecedor de teste</xNome><enderEmit><UF>${ufEmitente}</UF></enderEmit></emit>` +
-      `<dest><CNPJ>${cnpjDestinatario}</CNPJ><enderDest><UF>${ufDestinatario}</UF></enderDest></dest>` +
-      `<det nItem="1"><prod><cProd>1</cProd></prod></det><total><ICMSTot><vNF>123.45</vNF></ICMSTot></total></infNFe></NFe><protNFe><infProt><chNFe>29260112345678000195550010000000071000000017</chNFe><cStat>100</cStat><nProt>123456789</nProt></infProt></protNFe></nfeProc>`,
-    );
+    const xml = (ufEmitente: string, ufDestinatario: string, cnpjDestinatario = "12345678000276") =>
+      Buffer.from(
+        `<nfeProc><NFe><infNFe Id="NFe29260112345678000195550010000000071000000017"><ide><mod>55</mod><nNF>7</nNF><serie>1</serie><dhEmi>2026-01-10T10:00:00-03:00</dhEmi></ide>` +
+          `<emit><CNPJ>98765432000100</CNPJ><xNome>Fornecedor de teste</xNome><enderEmit><UF>${ufEmitente}</UF></enderEmit></emit>` +
+          `<dest><CNPJ>${cnpjDestinatario}</CNPJ><enderDest><UF>${ufDestinatario}</UF></enderDest></dest>` +
+          `<det nItem="1"><prod><cProd>1</cProd></prod></det><total><ICMSTot><vNF>123.45</vNF></ICMSTot></total></infNFe></NFe><protNFe><infProt><chNFe>29260112345678000195550010000000071000000017</chNFe><cStat>100</cStat><nProt>123456789</nProt></infProt></protNFe></nfeProc>`,
+      );
     const cnpjCertificado = "12345678000195";
     expect(extrairNfeEntrada(xml("SP", "BA"), "procNFe_v4.00.xsd", cnpjCertificado)).toMatchObject({
-      numero_nfe: "7", emitente_nome: "Fornecedor de teste", uf_origem: "SP", uf_destino: "BA", valor_total_xml: "123.45",
+      numero_nfe: "7",
+      emitente_nome: "Fornecedor de teste",
+      uf_origem: "SP",
+      uf_destino: "BA",
+      valor_total_xml: "123.45",
     });
-    expect(extrairNfeEntrada(xml("BA", "BA"), "procNFe_v4.00.xsd", cnpjCertificado)).toMatchObject({ uf_origem: "BA", uf_destino: "BA" });
+    expect(extrairNfeEntrada(xml("BA", "BA"), "procNFe_v4.00.xsd", cnpjCertificado)).toMatchObject({
+      uf_origem: "BA",
+      uf_destino: "BA",
+    });
     expect(extrairNfeEntrada(xml("SP", "BA"), "resNFe_v1.01.xsd", cnpjCertificado)).toBeNull();
-    expect(extrairNfeEntrada(Buffer.from(xml("SP", "BA").toString().replace("<nProt>123456789</nProt>", "")), "procNFe_v4.00.xsd", cnpjCertificado)).toBeNull();
-    expect(extrairNfeEntrada(xml("SP", "BA", "87654321000100"), "procNFe_v4.00.xsd", cnpjCertificado)).toBeNull();
+    expect(
+      extrairNfeEntrada(
+        Buffer.from(xml("SP", "BA").toString().replace("<nProt>123456789</nProt>", "")),
+        "procNFe_v4.00.xsd",
+        cnpjCertificado,
+      ),
+    ).toBeNull();
+    expect(
+      extrairNfeEntrada(xml("SP", "BA", "87654321000100"), "procNFe_v4.00.xsd", cnpjCertificado),
+    ).toBeNull();
   });
 });
 
 describe("Proteção do certificado", () => {
   const anterior = process.env.FISCOAI_CERTIFICATE_ENCRYPTION_KEY;
-  afterEach(() => { process.env.FISCOAI_CERTIFICATE_ENCRYPTION_KEY = anterior; });
+  afterEach(() => {
+    process.env.FISCOAI_CERTIFICATE_ENCRYPTION_KEY = anterior;
+  });
 
   it("criptografa e rejeita adulteração", () => {
     process.env.FISCOAI_CERTIFICATE_ENCRYPTION_KEY = randomBytes(32).toString("base64");
@@ -64,7 +118,9 @@ describe("Proteção do certificado", () => {
     const cifra = criptografarCertificado(segredo);
     expect(cifra).not.toContain(segredo.senha);
     expect(descriptografarCertificado(cifra)).toEqual(segredo);
-    expect(() => descriptografarCertificado(cifra.slice(0, -2) + "AA")).toThrow();
+    const partes = cifra.split(".");
+    partes[2] = `${partes[2][0] === "A" ? "B" : "A"}${partes[2].slice(1)}`;
+    expect(() => descriptografarCertificado(partes.join("."))).toThrow();
     const xml = Buffer.from("<nfeProc>teste</nfeProc>");
     const protegido = criptografarXml(xml);
     expect(protegido.includes(xml)).toBe(false);
@@ -76,6 +132,8 @@ describe("Proteção do certificado", () => {
   it("falha fechada sem chave e sem PFX válido", () => {
     delete process.env.FISCOAI_CERTIFICATE_ENCRYPTION_KEY;
     expect(() => criptografarCertificado({ pfx: "x", senha: "y" })).toThrow();
-    expect(() => inspecionarCertificado(Buffer.from("inválido").toString("base64"), "senha")).toThrow();
+    expect(() =>
+      inspecionarCertificado(Buffer.from("inválido").toString("base64"), "senha"),
+    ).toThrow();
   });
 });
