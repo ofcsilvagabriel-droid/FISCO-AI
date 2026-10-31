@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parsearNFe } from "@/modules/xml/services/parsearNFe";
-import { baixarDocumentoDfe, consultarDfe, consultarDfePorChave, listarDocumentosDfe, marcarDocumentosDfe } from "@/modules/dfe/services/distribuicaoDfe.functions";
+import { baixarDocumentoDfe, consultarDfe, listarDocumentosDfe, marcarDocumentosDfe } from "@/modules/dfe/services/distribuicaoDfe.functions";
 import { existeLoteDfePendente, INTERVALO_MINIMO_BUSCA_DFE_MS } from "@/modules/dfe/services/distribuicaoDfe.shared";
 import { listarEmpresasFisco } from "@/modules/empresas/empresas.functions";
 
@@ -43,8 +43,6 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
   const [cursor, setCursor] = useState(null);
   const [ocupado, setOcupado] = useState("");
   const [buscando, setBuscando] = useState(false);
-  const [recuperando, setRecuperando] = useState(false);
-  const [chaveRecuperacao, setChaveRecuperacao] = useState("");
   const [horaAtual, setHoraAtual] = useState(Date.now());
   const [aviso, setAviso] = useState("");
   const [erro, setErro] = useState("");
@@ -240,27 +238,6 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
     } finally { setBuscando(false); }
   };
 
-  const recuperarPorChave = async () => {
-    const chave = String(chaveRecuperacao || "").replace(/\D/g, "");
-    if (!selecionado || chave.length !== 44 || recuperando) return;
-    setRecuperando(true); setErro(""); setAviso("Consultando a chave diretamente na SEFAZ…");
-    try {
-      const resultado = await consultarDfePorChave({ data: { cnpj: selecionado, chave } });
-      if (resultado.status === "ok") {
-        const totais = await processarPendentes(selecionado, true);
-        await atualizarDocumentos(selecionado, 0);
-        setChaveRecuperacao("");
-        setAviso(resultado.duplicado
-          ? "O XML completo desta NF-e já estava armazenado no FiscoAI."
-          : `XML recuperado gratuitamente da SEFAZ. ${totais.importadas ? "A NF-e foi enviada para cálculo." : "A NF-e foi arquivada."}`);
-      } else {
-        await atualizarDocumentos(selecionado, 0);
-        setAviso(""); setErro(resultado.mensagem || `A SEFAZ retornou: ${resultado.status}.`);
-      }
-    } catch (e) { setAviso(""); setErro(mensagem(e)); }
-    finally { setRecuperando(false); }
-  };
-
   const bloqueadoAte = cursor?.bloqueado_ate ? new Date(cursor.bloqueado_ate).getTime() : 0;
   const lotePendente = existeLoteDfePendente(cursor);
   const intervaloAte = !lotePendente && cursor?.consultado_em ? new Date(cursor.consultado_em).getTime() + INTERVALO_MINIMO_BUSCA_DFE_MS : 0;
@@ -306,15 +283,6 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
       <button type="button" onClick={buscarXmls} disabled={!selecionado || !empresaSelecionada?.certificado || new Date(empresaSelecionada.certificado.validade_fim).getTime() <= horaAtual || !empresaSelecionada?.ativa || buscando} style={S.btn("primary")}>
         {buscando ? "Buscando XMLs…" : "Buscar XMLs agora"}
       </button>
-      <div style={{ gridColumn: "1 / -1", display: "grid", gridTemplateColumns: "minmax(240px,1fr) auto", gap: 8, alignItems: "end" }}>
-        <label style={{ fontSize: 12 }}>Consultar NF-e por chave de acesso
-          <input value={chaveRecuperacao} onChange={e => setChaveRecuperacao(e.target.value.replace(/\D/g, "").slice(0, 44))} placeholder="44 dígitos" inputMode="numeric" style={{ ...S.inp, width: "100%" }} />
-          <span style={{ display: "block", color: C.muted, fontSize: 10, marginTop: 4 }}>Consulta oficial e gratuita da SEFAZ. Limite preventivo de 18 consultas por hora por CNPJ; documentos disponíveis por até 90 dias.</span>
-        </label>
-        <button type="button" onClick={recuperarPorChave} disabled={!selecionado || chaveRecuperacao.length !== 44 || recuperando} style={S.btn("ghost")}>
-          {recuperando ? "Consultando…" : "Consultar chave"}
-        </button>
-      </div>
       {!empresas.some(empresa => empresa.certificado) && <button type="button" onClick={() => onNavigate?.("empresas")} style={S.btn("primary")}>Cadastrar empresa e certificado</button>}
     </div>
 

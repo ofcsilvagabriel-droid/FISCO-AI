@@ -13,10 +13,6 @@ const listaInput = z.object({
   offset: z.number().int().min(0).max(100000).optional().default(0),
 });
 const documentoInput = z.object({ id: z.string().uuid() });
-const chaveInput = z.object({
-  cnpj: z.string().regex(/^[0-9]{14}$/),
-  chave: z.string().regex(/^[0-9]{44}$/),
-});
 const processamentoInput = z.object({
   items: z
     .array(
@@ -44,15 +40,6 @@ export const consultarDfe = createServerFn({ method: "POST" })
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { consultarDistribuicaoDfe } = await import("./distribuicaoDfe.server");
     return consultarDistribuicaoDfe(supabaseAdmin, context.userId, data.cnpj, data.manual === true);
-  });
-
-export const consultarDfePorChave = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .validator((entrada: unknown) => chaveInput.parse(entrada))
-  .handler(async ({ data, context }) => {
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { consultarDistribuicaoDfePorChave } = await import("./distribuicaoDfe.server");
-    return consultarDistribuicaoDfePorChave(supabaseAdmin, context.userId, data.cnpj, data.chave);
   });
 
 export const listarDocumentosDfe = createServerFn({ method: "POST" })

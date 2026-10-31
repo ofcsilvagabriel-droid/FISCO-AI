@@ -11,7 +11,6 @@ import {
   extrairNfeEntrada,
   interpretarRetornoDfe,
   montarConsultaDfe,
-  montarConsultaDfePorChave,
 } from "../distribuicaoDfe.server";
 import {
   existeLoteDfePendente,
@@ -51,15 +50,6 @@ describe("Distribuição DF-e", () => {
     expect(xml).toContain("<CNPJ>12345678000195</CNPJ>");
     expect(xml).toContain("<ultNSU>000000000000123</ultNSU>");
     expect(() => montarConsultaDfe("<cnpj>", "0")).toThrow();
-  });
-
-  it("monta consulta oficial por chave sem alterar o cursor NSU", () => {
-    const chave = "29260112345678000195550010000000071000000017";
-    const xml = montarConsultaDfePorChave("12345678000195", chave);
-    expect(xml).toContain("<consChNFe>");
-    expect(xml).toContain(`<chNFe>${chave}</chNFe>`);
-    expect(xml).not.toContain("<distNSU>");
-    expect(() => montarConsultaDfePorChave("123", chave)).toThrow();
   });
 
   it("interpreta status e documentos compactados", () => {

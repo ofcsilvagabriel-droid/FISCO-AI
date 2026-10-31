@@ -34,7 +34,6 @@ const SEQUENCIAL_CIENCIA = "1";
 const SEQUENCIAL_ID_CIENCIA = "01";
 const VERSAO_EVENTO_CIENCIA = "1.00";
 const MAX_DOCUMENTOS_LOTE = 50;
-const LIMITE_CONSULTAS_CHAVE_HORA = 18;
 
 const primeiro = (raiz: Element | Document, nome: string) =>
   raiz.getElementsByTagNameNS("*", nome).item(0);
@@ -135,19 +134,6 @@ export function montarConsultaDfe(cnpj: string, ultNsu: string): string {
     `<nfeDistDFeInteresse xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeDistribuicaoDFe">` +
     `<nfeDadosMsg><distDFeInt xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.01">` +
     `<tpAmb>1</tpAmb><CNPJ>${cnpj}</CNPJ><distNSU><ultNSU>${ultNsu}</ultNSU></distNSU>` +
-    `</distDFeInt></nfeDadosMsg></nfeDistDFeInteresse></soap:Body></soap:Envelope>`
-  );
-}
-
-export function montarConsultaDfePorChave(cnpj: string, chave: string): string {
-  if (!/^[0-9]{14}$/.test(cnpj) || !/^[0-9]{44}$/.test(chave))
-    throw new Error("CNPJ ou chave de acesso inválida.");
-  return (
-    `<?xml version="1.0" encoding="utf-8"?>` +
-    `<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"><soap:Body>` +
-    `<nfeDistDFeInteresse xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeDistribuicaoDFe">` +
-    `<nfeDadosMsg><distDFeInt xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.01">` +
-    `<tpAmb>1</tpAmb><CNPJ>${cnpj}</CNPJ><consChNFe><chNFe>${chave}</chNFe></consChNFe>` +
     `</distDFeInt></nfeDadosMsg></nfeDistDFeInteresse></soap:Body></soap:Envelope>`
   );
 }
@@ -653,170 +639,6 @@ export async function processarCienciasPendentes(db: any, userId?: string, cnpj?
     enviadas: resultados.filter((r) => r.status === "fulfilled").length,
     falhas: resultados.filter((r) => r.status === "rejected").length,
   };
-}
-
-export async function consultarDistribuicaoDfePorChave(
-  db: any,
-  userId: string,
-  cnpj: string,
-  chave: string,
-) {
-  if (!/^[0-9]{14}$/.test(cnpj) || !/^[0-9]{44}$/.test(chave))
-    throw new Error("CNPJ ou chave de acesso inválida.");
-  const umaHoraAtras = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-  const { count, error: limiteErro } = await db
-    .from("fiscoai_dfe_tentativas")
-    .select("id", { count: "exact", head: true })
-    .eq("user_id", userId)
-    .eq("cnpj", cnpj)
-    .eq("operacao", "CONSULTAR_POR_CHAVE")
-    .gte("iniciada_em", umaHoraAtras);
-  if (limiteErro)
-    throw new Error(`Não foi possível verificar o limite da SEFAZ: ${limiteErro.message}`);
-  if ((count || 0) >= LIMITE_CONSULTAS_CHAVE_HORA)
-    throw new Error("Limite preventivo atingido: aguarde uma hora para nova consulta por chave.");
-
-  const { data: certificado, error: certErro } = await db
-    .from("fiscoai_certificados_dfe")
-    .select("segredo_criptografado,validade_fim")
-    .eq("user_id", userId)
-    .eq("cnpj", cnpj)
-    .single();
-  if (certErro || !certificado) throw new Error("Certificado deste CNPJ não encontrado.");
-  if (new Date(certificado.validade_fim) <= new Date())
-    throw new Error("Certificado vencido. Cadastre um novo A1.");
-
-  const agora = new Date();
-  const { data: cursor, error: cursorErro } = await db
-    .from("fiscoai_dfe_cursores")
-    .select("bloqueado_ate,lock_ate,ultimo_status")
-    .eq("user_id", userId)
-    .eq("cnpj", cnpj)
-    .maybeSingle();
-  if (cursorErro) throw new Error(cursorErro.message);
-  if (
-    cursor?.ultimo_status?.startsWith("656") &&
-    new Date(cursor.bloqueado_ate).getTime() > agora.getTime()
-  ) {
-    throw new Error(
-      `A SEFAZ bloqueou novas consultas por consumo indevido. Tente após ${new Date(cursor.bloqueado_ate).toLocaleString("pt-BR", { timeZone: "America/Bahia" })}.`,
-    );
-  }
-  const token = randomUUID();
-  const { data: bloqueio, error: bloqueioErro } = await db
-    .from("fiscoai_dfe_cursores")
-    .update({
-      lock_ate: new Date(agora.getTime() + DURACAO_LOCK_MS).toISOString(),
-      lock_token: token,
-    })
-    .eq("user_id", userId)
-    .eq("cnpj", cnpj)
-    .lt("lock_ate", agora.toISOString())
-    .select("cnpj")
-    .maybeSingle();
-  if (bloqueioErro) throw new Error(bloqueioErro.message);
-  if (!bloqueio)
-    throw new Error(
-      cursor?.lock_ate && new Date(cursor.lock_ate).getTime() > agora.getTime()
-        ? `Já existe uma consulta em andamento para este CNPJ. A trava expira até ${new Date(cursor.lock_ate).toLocaleString("pt-BR", { timeZone: "America/Bahia" })}.`
-        : "Não foi possível iniciar a consulta por chave. Atualize a página e tente novamente.",
-    );
-
-  const tentativaId = await iniciarTentativaDistribuicao(db, userId, cnpj, "CONSULTAR_POR_CHAVE");
-  let tentativaFinalizada = false;
-  try {
-    const segredo = descriptografarCertificado(certificado.segredo_criptografado);
-    const { tls } = prepararCertificado(segredo.pfx, segredo.senha);
-    const resposta = await requisitarSefaz(montarConsultaDfePorChave(cnpj, chave), tls);
-    const retorno = interpretarRetornoDfe(resposta);
-    const status = `${retorno.cStat} — ${retorno.motivo}`.slice(0, 250);
-    if (retorno.cStat === "656") {
-      const bloqueadoAte = new Date(Date.now() + INTERVALO_MINIMO_BUSCA_DFE_MS).toISOString();
-      await db
-        .from("fiscoai_dfe_cursores")
-        .update({
-          bloqueado_ate: bloqueadoAte,
-          ultimo_status: status,
-          consultado_em: new Date().toISOString(),
-        })
-        .eq("user_id", userId)
-        .eq("cnpj", cnpj)
-        .eq("lock_token", token);
-      await finalizarTentativaDistribuicao(db, userId, tentativaId, "BLOQUEADA", {
-        codigo: retorno.cStat,
-        mensagem: retorno.motivo,
-        detalhes: { modo: "consChNFe", bloqueado_ate: bloqueadoAte },
-      });
-      tentativaFinalizada = true;
-      throw new Error(`${status}. Aguarde duas horas antes de consultar novamente.`);
-    }
-    if (retorno.cStat === "137" || !retorno.documentos.length) {
-      await finalizarTentativaDistribuicao(db, userId, tentativaId, "SEM_DOCUMENTO", {
-        codigo: retorno.cStat,
-        mensagem: retorno.motivo,
-        detalhes: { modo: "consChNFe" },
-      });
-      tentativaFinalizada = true;
-      return { status: "nao_encontrada", mensagem: status };
-    }
-    if (retorno.cStat !== "138") throw new Error(`SEFAZ: ${status}`);
-    const item = retorno.documentos[0];
-    if (!/^[0-9]{15}$/.test(item.nsu) || !item.base64 || !item.schema)
-      throw new Error("Documento inválido retornado pela consulta por chave.");
-    const xml = gunzipSync(Buffer.from(item.base64, "base64"), { maxOutputLength: LIMITE_XML });
-    const detalhes = extrairNfeEntrada(xml, item.schema, cnpj);
-    if (detalhes) {
-      const persistido = await persistirXmlNfeCompleta({
-        db,
-        userId,
-        cnpj,
-        xml,
-        origem: "SEFAZ_DISTRIBUICAO",
-        nsu: item.nsu,
-        schemaXml: item.schema,
-        metadadosOrigem: { modo: "consChNFe" },
-      });
-      await finalizarTentativaDistribuicao(db, userId, tentativaId, "SUCESSO", {
-        codigo: retorno.cStat,
-        mensagem: retorno.motivo,
-        detalhes: { modo: "consChNFe", documento_id: persistido.documentoId },
-      });
-      tentativaFinalizada = true;
-      return { status: "ok", documentoId: persistido.documentoId, duplicado: persistido.duplicado };
-    }
-    const resumo = extrairResumoNfe(xml, item.schema);
-    if (!resumo || resumo.chave_acesso !== chave)
-      throw new Error("A SEFAZ não retornou uma NF-e ou resumo válido para esta chave.");
-    const persistido = await persistirResumoNfe(db, userId, cnpj, item, xml, resumo);
-    const ciencias = await processarCienciasPendentes(db, userId, cnpj);
-    await finalizarTentativaDistribuicao(db, userId, tentativaId, "SUCESSO", {
-      codigo: retorno.cStat,
-      mensagem: "Resumo localizado; XML completo ainda não liberado.",
-      detalhes: { modo: "consChNFe", documento_id: persistido.documentoId, ciencias },
-    });
-    tentativaFinalizada = true;
-    return {
-      status: "somente_resumo",
-      documentoId: persistido.documentoId,
-      mensagem: ciencias.enviadas
-        ? "Resumo localizado e Ciência da Operação registrada. Consulte novamente mais tarde."
-        : "Resumo localizado, mas o XML completo ainda não está disponível.",
-    };
-  } catch (erro) {
-    if (!tentativaFinalizada)
-      await finalizarTentativaDistribuicao(db, userId, tentativaId, "FALHA", {
-        mensagem: erro instanceof Error ? erro.message : String(erro),
-        detalhes: { modo: "consChNFe" },
-      });
-    throw erro;
-  } finally {
-    await db
-      .from("fiscoai_dfe_cursores")
-      .update({ lock_ate: new Date(0).toISOString(), lock_token: null })
-      .eq("user_id", userId)
-      .eq("cnpj", cnpj)
-      .eq("lock_token", token);
-  }
 }
 
 export async function consultarDistribuicaoDfe(
