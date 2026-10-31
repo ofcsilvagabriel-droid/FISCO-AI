@@ -14,10 +14,11 @@ Fonte: Portal Nacional da NF-e, serviço `NFeDistribuicaoDFe` (produção). Revi
 
 - A1 e senha são cifrados com AES-256-GCM no servidor. Nem a chave de cifragem nem o PFX são expostos por API de leitura ao navegador. A tabela e o bucket privado não concedem acesso direto a `anon`/`authenticated`; as funções validam o usuário e filtram por `user_id`.
 - PFX legado que o OpenSSL da Vercel não abre é convertido somente em memória para certificado/chave PEM antes do mTLS. O fallback usa `node-forge@1.4.0` sob a opção BSD-3-Clause; não usa a verificação de assinatura RSA do pacote (afetada por GHSA-86w9-cpqp-85rv). Reavaliar a dependência quando houver versão corrigida.
-- A consulta usa mTLS e `distNSU`. O retorno `docZip` é descompactado com limite de tamanho, recebe SHA-256, é cifrado e gravado no bucket privado; metadados ficam no banco. O cursor só avança após persistir todos os documentos do lote.
+- A consulta usa mTLS e `distNSU`. O retorno `docZip` é descompactado com limite de tamanho, recebe SHA-256, é cifrado e gravado no bucket privado; metadados ficam no banco. O cursor nunca regride e só avança após persistir todos os documentos e sua cadeia de custódia.
 - `resNFe` é resumo, não nota completa. Apenas XMLs completos (`procNFe`) oferecem botão de importação no FiscoAI. A Ciência da Emissão é enviada automaticamente quando um resumo elegível é recebido para viabilizar a recuperação do XML completo; isso não equivale a confirmar a operação.
-- Resumos são conservados apenas como controle interno para a Ciência da Emissão e para recuperar o XML completo em consultas posteriores. A lista de notas, o indicador de XMLs disponíveis e a importação mostram apenas `procNFe` validado com itens, chave e protocolo de autorização. A busca automática diária é acionada pelo cron da Vercel (`GET /api/cron/buscar-nfe`), com `CRON_SECRET`; a consulta manual pode continuar lotes pendentes.
-- Após `cStat=137` ou `656`, o CNPJ aguarda pelo menos uma hora. Outros status exigem investigação antes de novas tentativas; a aplicação aplica pausa de 15 minutos.
+- Resumos são conservados como evidência e controle interno para a Ciência da Emissão e para recuperar o XML completo em consultas posteriores. A chegada do XML completo não apaga o artefato anterior. A lista de notas, o indicador de XMLs disponíveis e a importação mostram apenas `procNFe` validado com itens, chave e protocolo de autorização.
+- O agendador revisita a fila periodicamente, mas cada CNPJ somente consulta a SEFAZ depois do intervalo mínimo de duas horas. Lotes em andamento podem continuar imediatamente até `ultNSU` alcançar `maxNSU`.
+- Após `cStat=137`, `656` ou outro retorno não processável, o CNPJ fica bloqueado por duas horas. Cada tentativa registra retorno, horário, cursor e resultado sem guardar certificado ou XML no log.
 - A interface mostra certificados vencidos ou com até 60 dias restantes. Não há e-mail/SMS de alerta quando o app está fechado.
 
 ## Verificações antes de produção
@@ -29,7 +30,7 @@ Fonte: Portal Nacional da NF-e, serviço `NFeDistribuicaoDFe` (produção). Revi
 
 ## Recuperação
 
-- Se houver `656`, aguardar uma hora completa sem novas chamadas; insistir reinicia o bloqueio.
+- Se houver `656`, aguardar duas horas completas sem novas chamadas para aquele CNPJ; insistir pode renovar o bloqueio da SEFAZ.
 - Se ocorrer falha após salvar parte do lote, manter o cursor anterior e repetir somente depois de resolver a falha: os caminhos e hashes permitem deduplicação.
 - Se aparecer lacuna de NSU, não zerar automaticamente o cursor; investigar a sequência do ator e consultas feitas por outros sistemas.
 - Na troca de A1 do mesmo CNPJ, o cursor é preservado. Ao excluir o certificado, os XMLs já recebidos permanecem no bucket privado; o cursor é removido junto com o certificado.

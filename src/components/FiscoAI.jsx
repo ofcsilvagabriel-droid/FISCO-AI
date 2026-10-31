@@ -22,6 +22,7 @@ import CalculadoraFlutuante from "@/components/CalculadoraFlutuante";
 import PainelDfe from "@/components/dfe/PainelDfe";
 import PainelEmpresas from "@/components/empresas/PainelEmpresas";
 import { listarCertificadosDfe } from "@/modules/dfe/services/certificados.functions";
+import { importarXmlManualNoHub } from "@/modules/dfe/services/importacaoManual.functions";
 import { listarEmpresasFisco } from "@/modules/empresas/empresas.functions";
 import { HistoricoApuracaoService } from "@/modules/fiscal/domain/services/HistoricoApuracaoService";
 import { HistoricoImportacaoService, identidadeImportacao, mesclarHistorico } from "@/modules/fiscal/domain/services/HistoricoImportacaoService";
@@ -3393,17 +3394,22 @@ export default function App(){
           erro++; detalhes.push({arquivo:fileName,status:"erro",motivo:e||"XML inválido"});
           continue;
         }
+        const empId=empresaIdDe(n);
+        let avisoHub="";
+        if(!file?.fiscoaiHubDocumento&&/^\d{14}$/.test(empId)){
+          try{await importarXmlManualNoHub({data:{empresaCnpj:empId,xml}});}
+          catch(ex){avisoHub=`XML calculado, mas não guardado no Hub: ${ex?.message||ex}`;}
+        }
         const identidade=identidadeImportacao({nota:n});
         const chaveNFe=String(n.chave||"").replace(/\D/g,"");
         const existenteNoHistorico=!!identidade&&identidadesExistentes.has(identidade);
         const existenteNoArquivo=chaveNFe.length===44&&chavesExistentes.has(chaveNFe);
         if(existenteNoHistorico&&existenteNoArquivo){
-          ok++; detalhes.push({arquivo:fileName,status:"ok",duplicada:true,numero:n.numero,empresa:n.destinatario_nome||"—"});
+          ok++; detalhes.push({arquivo:fileName,status:"ok",duplicada:true,numero:n.numero,empresa:n.destinatario_nome||"—",aviso:avisoHub||undefined});
           continue;
         }
         const orig=n.uf_origem||ufOrigem;
         const dest=n.uf_destino||ufDestino;
-        const empId=empresaIdDe(n);
         const prods=p.map(pr=>({...pr,empresa_id:empId,analise:analisarProduto(pr,orig,dest)}));
         const calcs=prods.map(pr=>calcularProdComFCP(pr,orig,dest,modoCalculo));
         const notaFinal={...n,uf_origem:orig,uf_destino:dest,modo_calculo:modoCalculo};
@@ -3426,7 +3432,7 @@ export default function App(){
         if(chaveNFe.length===44)chavesExistentes.add(chaveNFe);
         importados.push({notaFinal,prods,calcs});
         novosHist.push({id:Date.now()+Math.random(),data:new Date().toLocaleString("pt-BR"),nota:notaFinal,produtos:prods,calculos:calcs,xml,modoCalculo,origem:"lote"});
-        detalhes.push({arquivo:fileName,status:"ok",numero:notaFinal.numero,empresa:notaFinal.destinatario_nome||"—",mesAno});
+        detalhes.push({arquivo:fileName,status:"ok",numero:notaFinal.numero,empresa:notaFinal.destinatario_nome||"—",mesAno,aviso:avisoHub||undefined});
       }catch(ex){
         erro++; detalhes.push({arquivo:fileName,status:"erro",motivo:ex.message||"Falha na leitura"});
       }
@@ -3569,6 +3575,11 @@ export default function App(){
     const orig=ufO||n.uf_origem||ufOrigem;
     const dest=ufD||n.uf_destino||ufDestino;
     const empId=empresaIdDe(n);
+    if(/^\d{14}$/.test(empId)){
+      importarXmlManualNoHub({data:{empresaCnpj:empId,xml}}).catch(ex=>{
+        setArqMsg({tipo:"error",txt:`NF-e calculada, mas o XML não foi guardado no Hub: ${ex?.message||ex}`});
+      });
+    }
     const prods=p.map(pr=>({...pr,empresa_id:empId,analise:analisarProduto(pr,orig,dest)}));
     // Calcular ICMS automaticamente para cada produto
     const calcs=prods.map(pr=>calcularProdComFCP(pr,orig,dest,modoCalculo));
@@ -3783,8 +3794,9 @@ export default function App(){
                     </div>
                     <div style={{maxHeight:180,overflow:"auto",marginTop:8,border:`1px solid ${C.border}`,borderRadius:8,padding:8,background:"rgba(0,0,0,0.15)"}}>
                       {loteStatus.detalhes.map((d,i)=>(
-                        <div key={i} style={{fontSize:11,padding:"3px 0",color:d.status==="ok"?"#68d391":"#fc8181",fontFamily:"ui-monospace,monospace"}}>
+                        <div key={i} style={{fontSize:11,padding:"3px 0",color:d.status==="ok"?(d.aviso?"#f6c85f":"#68d391"):"#fc8181",fontFamily:"ui-monospace,monospace"}}>
                           {d.status==="ok"?"✔":"✖"} {d.arquivo} {d.status==="ok"?`→ NF-e ${d.numero} · ${d.empresa} · ${labelMesAno(d.mesAno)}`:`— ${d.motivo}`}
+                          {d.aviso?` — ${d.aviso}`:""}
                         </div>
                       ))}
                     </div>

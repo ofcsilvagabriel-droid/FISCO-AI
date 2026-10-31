@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { randomBytes } from "node:crypto";
 import { criptografarCertificado, criptografarXml, descriptografarCertificado, descriptografarXml, inspecionarCertificado } from "../certificadoDfe.server";
 import { extrairNfeEntrada, interpretarRetornoDfe, montarConsultaDfe } from "../distribuicaoDfe.server";
-import { existeLoteDfePendente, INTERVALO_MINIMO_BUSCA_DFE_MS } from "../distribuicaoDfe.shared";
+import { existeLoteDfePendente, INTERVALO_MINIMO_BUSCA_DFE_MS, resolverCursoresDfe } from "../distribuicaoDfe.shared";
 
 describe("Distribuição DF-e", () => {
   it("usa intervalo de duas horas quando a distribuição está em dia e não bloqueia a continuação de lotes", () => {
@@ -10,6 +10,17 @@ describe("Distribuição DF-e", () => {
     expect(existeLoteDfePendente({ ult_nsu: "000000000000050", max_nsu: "000000000000051" })).toBe(true);
     expect(existeLoteDfePendente({ ult_nsu: "000000000000051", max_nsu: "000000000000051" })).toBe(false);
     expect(existeLoteDfePendente(null)).toBe(false);
+  });
+
+  it("nunca regride o cursor NSU nem aceita um maxNSU menor que o lote processado", () => {
+    expect(resolverCursoresDfe(
+      { ult_nsu: "000000000000050", max_nsu: "000000000000060" },
+      { ultNsu: "000000000000040", maxNsu: "000000000000045" },
+    )).toEqual({ ultNsu: "000000000000050", maxNsu: "000000000000050" });
+    expect(resolverCursoresDfe(
+      { ult_nsu: "000000000000050", max_nsu: "000000000000060" },
+      { ultNsu: "000000000000070", maxNsu: "000000000000065" },
+    )).toEqual({ ultNsu: "000000000000070", maxNsu: "000000000000070" });
   });
 
   it("monta consulta NSU sem dados de nota fixos", () => {
