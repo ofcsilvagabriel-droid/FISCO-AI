@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { calcularDigitoVerificadorChaveNfe } from "@/modules/xml/domain/chaveNfe";
-import { validarXmlNfeCompleta } from "../documentoFiscal.server";
+import {
+  identificarDestinatarioXmlNfeCompleta,
+  validarXmlNfeCompleta,
+} from "../documentoFiscal.server";
 
 function xmlEntrada(ufOrigem: string, ufDestino: string, cnpjDestino = "12345678000276") {
   const base = "2926119876543200010055001000000001100000001";
@@ -31,8 +34,18 @@ describe("validação do XML de entrada", () => {
   });
 
   it("rejeita documento sem protocolo ou destinado a outra raiz de CNPJ", () => {
-    expect(() => validarXmlNfeCompleta(xmlEntrada("SP", "BA", "87654321000100"), "12345678000195")).toThrow();
-    const semProtocolo = Buffer.from(xmlEntrada("SP", "BA").toString().replace("<nProt>123</nProt>", ""));
+    expect(() =>
+      validarXmlNfeCompleta(xmlEntrada("SP", "BA", "87654321000100"), "12345678000195"),
+    ).toThrow();
+    const semProtocolo = Buffer.from(
+      xmlEntrada("SP", "BA").toString().replace("<nProt>123</nProt>", ""),
+    );
     expect(() => validarXmlNfeCompleta(semProtocolo, "12345678000195")).toThrow();
+  });
+
+  it("identifica o CNPJ destinatário sem depender da empresa ativa", () => {
+    expect(identificarDestinatarioXmlNfeCompleta(xmlEntrada("SP", "BA"))).toMatchObject({
+      destinatario_cnpj: "12345678000276",
+    });
   });
 });

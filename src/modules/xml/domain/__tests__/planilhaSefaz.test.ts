@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { calcularDigitoVerificadorChaveNfe } from "../chaveNfe";
-import { interpretarPlanilhaSefazCsv, vincularChavesPlanilhaSefaz } from "../planilhaSefaz";
+import {
+  interpretarPlanilhaSefazCsv,
+  prepararItensCaixaEntradaPlanilhaSefaz,
+} from "../planilhaSefaz";
 
 const baseChave = "2926111234567800019555001000000001100000001";
 const chaveValida = `${baseChave}${calcularDigitoVerificadorChaveNfe(baseChave)}`;
@@ -55,26 +58,18 @@ describe("interpretarPlanilhaSefazCsv", () => {
       destinatarioCnpj: "40582460000190",
       destinatarioNome: "Empresa Destinataria",
     });
-    expect(
-      vincularChavesPlanilhaSefaz(
-        resultado,
-        [{ cnpj: "40582460000190", razao_social: "Empresa Destinataria" }],
-        "00000000000000",
-      ).grupos,
-    ).toEqual([{ cnpj: "40582460000190", nome: "Empresa Destinataria", chaves: [chaveValida] }]);
+    expect(prepararItensCaixaEntradaPlanilhaSefaz(resultado)[0]).toMatchObject({
+      chave: chaveValida,
+      destinatarioCnpj: "40582460000190",
+    });
   });
 
-  it("usa a empresa selecionada quando o relatório não informa destinatário", () => {
+  it("mantém sem empresa quando o relatório não informa destinatário", () => {
     const resultado = interpretarPlanilhaSefazCsv(
       `Chave de Acesso;Situacao;\n'${chaveValida};Autorizada;`,
     );
-    const vinculos = vincularChavesPlanilhaSefaz(
-      resultado,
-      [{ cnpj: "40582460000190", razao_social: "Empresa Selecionada" }],
-      "40582460000190",
-    );
+    const itens = prepararItensCaixaEntradaPlanilhaSefaz(resultado);
 
-    expect(vinculos.grupos[0]).toMatchObject({ cnpj: "40582460000190", chaves: [chaveValida] });
-    expect(vinculos.semEmpresa).toHaveLength(0);
+    expect(itens[0]).toMatchObject({ chave: chaveValida, destinatarioCnpj: null });
   });
 });

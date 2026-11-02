@@ -55,14 +55,6 @@ export type LinhaPlanilhaSefaz = {
   destinatarioNome: string;
 };
 
-type EmpresaDestino = {
-  cnpj: string;
-  razao_social?: string | null;
-  nome_fantasia?: string | null;
-};
-
-const digitos = (valor: unknown) => String(valor ?? "").replace(/\D/g, "");
-
 export function interpretarPlanilhaSefazCsv(conteudo: string) {
   const linhasTexto = String(conteudo || "")
     .replace(/^\uFEFF/, "")
@@ -146,36 +138,25 @@ export function interpretarPlanilhaSefazCsv(conteudo: string) {
   };
 }
 
-export function vincularChavesPlanilhaSefaz(
+export function prepararItensCaixaEntradaPlanilhaSefaz(
   resultado: ReturnType<typeof interpretarPlanilhaSefazCsv>,
-  empresas: EmpresaDestino[],
-  cnpjSelecionado: string,
 ) {
-  const empresasPorCnpj = new Map(empresas.map((empresa) => [digitos(empresa.cnpj), empresa]));
   const chavesValidas = new Set(resultado.chaves);
   const chavesVistas = new Set<string>();
-  const gruposPorCnpj = new Map<string, { cnpj: string; nome: string; chaves: string[] }>();
-  const semEmpresa: LinhaPlanilhaSefaz[] = [];
-
-  resultado.linhas.forEach((linha) => {
-    if (!chavesValidas.has(linha.chave) || chavesVistas.has(linha.chave)) return;
+  return resultado.linhas.flatMap((linha) => {
+    if (!chavesValidas.has(linha.chave) || chavesVistas.has(linha.chave)) return [];
     chavesVistas.add(linha.chave);
-    const cnpjDestino = resultado.temColunaDestinatario
-      ? digitos(linha.destinatarioCnpj)
-      : digitos(cnpjSelecionado);
-    const empresa = empresasPorCnpj.get(cnpjDestino);
-    if (!empresa) {
-      semEmpresa.push(linha);
-      return;
-    }
-    const grupo = gruposPorCnpj.get(cnpjDestino) || {
-      cnpj: cnpjDestino,
-      nome: empresa.razao_social || empresa.nome_fantasia || cnpjDestino,
-      chaves: [],
-    };
-    grupo.chaves.push(linha.chave);
-    gruposPorCnpj.set(cnpjDestino, grupo);
+    return [
+      {
+        chave: linha.chave,
+        destinatarioCnpj: linha.destinatarioCnpj || null,
+        destinatarioNome: linha.destinatarioNome || null,
+        emitenteCnpj: linha.emitenteCnpj || null,
+        emitenteNome: linha.emitenteNome || null,
+        numeroNfe: linha.numeroNfe || null,
+        dataEmissao: linha.dataEmissao || null,
+        linha: linha.linha,
+      },
+    ];
   });
-
-  return { grupos: [...gruposPorCnpj.values()], semEmpresa };
 }

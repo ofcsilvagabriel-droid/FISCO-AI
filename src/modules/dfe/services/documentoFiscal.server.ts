@@ -30,6 +30,36 @@ export type DetalhesNfeEntrada = {
   valor_total_xml: string | null;
 };
 
+export function identificarDestinatarioXmlNfeCompleta(xml: Buffer) {
+  if (!xml.length || xml.length > LIMITE_XML_DFE) {
+    throw new Error("XML da NF-e vazio ou acima do limite permitido.");
+  }
+  const doc = new DOMParser().parseFromString(xml.toString("utf8"), "text/xml");
+  const nfe = primeiro(doc, "NFe");
+  const infNfe = nfe && primeiro(nfe, "infNFe");
+  const protocolo = primeiro(doc, "protNFe");
+  const ide = infNfe && primeiro(infNfe, "ide");
+  const dest = infNfe && primeiro(infNfe, "dest");
+  const chave = infNfe?.getAttribute("Id")?.replace(/^NFe/, "") || "";
+  const cnpjDestinatario = digitos(texto(dest || doc, "CNPJ"));
+  if (
+    !doc.documentElement ||
+    doc.documentElement.nodeName === "parsererror" ||
+    !nfe ||
+    !infNfe ||
+    !protocolo ||
+    texto(ide || doc, "mod") !== MODELO_NFE ||
+    texto(protocolo, "cStat") !== "100" ||
+    texto(protocolo, "chNFe") !== chave ||
+    !texto(protocolo, "nProt") ||
+    !/^\d{44}$/.test(chave) ||
+    !/^\d{14}$/.test(cnpjDestinatario)
+  ) {
+    throw new Error("O arquivo não contém uma NF-e completa, autorizada e destinada a CNPJ.");
+  }
+  return { chave_acesso: chave, destinatario_cnpj: cnpjDestinatario };
+}
+
 export function validarXmlNfeCompleta(xml: Buffer, cnpjEmpresa: string): DetalhesNfeEntrada {
   if (!xml.length || xml.length > LIMITE_XML_DFE) {
     throw new Error("XML da NF-e vazio ou acima do limite permitido.");

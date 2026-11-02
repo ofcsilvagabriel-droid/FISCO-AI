@@ -29,7 +29,9 @@ export async function concluirItemRecuperacao(
 ) {
   const { data: item, error: itemErro } = await db
     .from("fiscoai_xml_itens")
-    .select("id,lote_id,user_id,empresa_id,empresa_cnpj,chave_acesso,status,lock_token")
+    .select(
+      "id,lote_id,user_id,empresa_id,empresa_cnpj,chave_acesso,destinatario_cnpj_informado,status,lock_token",
+    )
     .eq("id", entrada.itemId)
     .eq("lock_token", entrada.lockToken)
     .eq("status", "CONSULTANDO")
@@ -37,20 +39,86 @@ export async function concluirItemRecuperacao(
   if (itemErro || !item) throw new Error("Item não encontrado ou concessão do worker expirada.");
 
   let resultado;
+  let empresaConfirmada: any = null;
   try {
-    const { persistirXmlNfeCompleta, validarXmlNfeCompleta } = await import("@/modules/dfe/services/documentoFiscal.server");
+    const {
+      identificarDestinatarioXmlNfeCompleta,
+      persistirXmlNfeCompleta,
+      validarXmlNfeCompleta,
+    } = await import("@/modules/dfe/services/documentoFiscal.server");
     const bytes = Buffer.from(entrada.xml, "utf8");
-    const validado = validarXmlNfeCompleta(bytes, item.empresa_cnpj);
-    if (validado.chave_acesso !== item.chave_acesso) {
+    const identificado = identificarDestinatarioXmlNfeCompleta(bytes);
+    if (identificado.chave_acesso !== item.chave_acesso) {
       throw new Error("O XML devolvido pelo provedor não corresponde à chave reivindicada.");
     }
+    const { data: empresa, error: empresaErro } = await db
+      .from("fiscoai_empresas")
+      .select("empresa_id,cnpj")
+      .eq("user_id", item.user_id)
+      .eq("cnpj", identificado.destinatario_cnpj)
+      .maybeSingle();
+    if (empresaErro)
+      throw new Error(`Falha ao identificar a empresa destinatária: ${empresaErro.message}`);
+    if (!empresa) {
+      const agora = new Date().toISOString();
+      const { error: esperaErro } = await db
+        .from("fiscoai_xml_itens")
+        .update({
+          status: "AGUARDANDO_EMPRESA",
+          destinatario_cnpj_informado: identificado.destinatario_cnpj,
+          identificacao_origem: "XML_CONFIRMADO",
+          lock_token: null,
+          lock_ate: "1970-01-01T00:00:00.000Z",
+          proxima_tentativa_em: null,
+          ultimo_codigo: "DESTINATARIO_NAO_CADASTRADO",
+          ultimo_erro:
+            "Cadastre a empresa destinatária confirmada pelo XML para repetir a recuperação.",
+          atualizado_em: agora,
+        })
+        .eq("id", item.id)
+        .eq("lock_token", entrada.lockToken);
+      if (esperaErro) throw new Error(esperaErro.message);
+      await db.from("fiscoai_xml_auditoria").insert({
+        user_id: item.user_id,
+        empresa_cnpj: identificado.destinatario_cnpj,
+        item_id: item.id,
+        operacao: "IDENTIFICAR_DESTINATARIO_XML",
+        status: "BLOQUEADA",
+        codigo_retorno: "DESTINATARIO_NAO_CADASTRADO",
+        mensagem: "XML confirmado, mas a empresa destinatária ainda não está cadastrada.",
+        detalhes: { chave_acesso: item.chave_acesso },
+        finalizado_em: agora,
+      });
+      await atualizarTotaisLote(db, item.lote_id);
+      return { aguardandoEmpresa: true, destinatarioCnpj: identificado.destinatario_cnpj };
+    }
+    empresaConfirmada = empresa;
+    const validado = validarXmlNfeCompleta(bytes, empresa.cnpj);
+    const { error: identificacaoErro } = await db
+      .from("fiscoai_xml_itens")
+      .update({
+        empresa_id: empresa.empresa_id,
+        empresa_cnpj: empresa.cnpj,
+        destinatario_cnpj_informado: empresa.cnpj,
+        identificacao_origem: "XML_CONFIRMADO",
+        atualizado_em: new Date().toISOString(),
+      })
+      .eq("id", item.id)
+      .eq("lock_token", entrada.lockToken);
+    if (identificacaoErro)
+      throw new Error(`Falha ao vincular a NF-e à empresa correta: ${identificacaoErro.message}`);
     resultado = await persistirXmlNfeCompleta({
       db,
       userId: item.user_id,
-      cnpj: item.empresa_cnpj,
+      cnpj: empresa.cnpj,
       xml: bytes,
       origem: "API_PROPRIA",
-      metadadosOrigem: { item_fila_id: item.id, provedor: "WORKER_AUTORIZADO" },
+      metadadosOrigem: {
+        item_fila_id: item.id,
+        provedor: "WORKER_AUTORIZADO",
+        identificacao_destinatario: "XML_CONFIRMADO",
+        cnpj_planilha: item.destinatario_cnpj_informado || null,
+      },
     });
   } catch (erro) {
     await falharItemRecuperacao(db, {
@@ -82,22 +150,33 @@ export async function concluirItemRecuperacao(
 
   await db.from("fiscoai_xml_auditoria").insert({
     user_id: item.user_id,
-    empresa_id: item.empresa_id,
-    empresa_cnpj: item.empresa_cnpj,
+    empresa_id: empresaConfirmada.empresa_id,
+    empresa_cnpj: empresaConfirmada.cnpj,
     documento_id: resultado.documentoId,
     item_id: item.id,
     operacao: "RECUPERAR_XML",
     status: "SUCESSO",
     mensagem: resultado.duplicado ? "XML já existente e validado." : "XML recuperado e validado.",
-    detalhes: { chave_acesso: item.chave_acesso, duplicado: resultado.duplicado },
+    detalhes: {
+      chave_acesso: item.chave_acesso,
+      duplicado: resultado.duplicado,
+      destinatario_confirmado_pelo_xml: true,
+      cnpj_informado_na_entrada: item.destinatario_cnpj_informado || null,
+    },
     finalizado_em: agora,
   });
   await atualizarTotaisLote(db, item.lote_id);
   await db
     .from("fiscoai_empresa_integracoes")
-    .update({ status: "ATIVA", ultima_execucao_em: agora, ultimo_sucesso_em: agora, ultimo_erro: null, atualizado_em: agora })
+    .update({
+      status: "ATIVA",
+      ultima_execucao_em: agora,
+      ultimo_sucesso_em: agora,
+      ultimo_erro: null,
+      atualizado_em: agora,
+    })
     .eq("user_id", item.user_id)
-    .eq("empresa_id", item.empresa_id)
+    .eq("empresa_id", empresaConfirmada.empresa_id)
     .eq("tipo", "RECUPERACAO_XML");
   return { documentoId: resultado.documentoId, duplicado: resultado.duplicado };
 }
@@ -156,7 +235,12 @@ export async function falharItemRecuperacao(
   await atualizarTotaisLote(db, item.lote_id);
   await db
     .from("fiscoai_empresa_integracoes")
-    .update({ status: "ERRO", ultima_execucao_em: agora.toISOString(), ultimo_erro: mensagem, atualizado_em: agora.toISOString() })
+    .update({
+      status: "ERRO",
+      ultima_execucao_em: agora.toISOString(),
+      ultimo_erro: mensagem,
+      atualizado_em: agora.toISOString(),
+    })
     .eq("user_id", item.user_id)
     .eq("empresa_id", item.empresa_id)
     .eq("tipo", "RECUPERACAO_XML");
@@ -183,6 +267,11 @@ async function atualizarTotaisLote(db: any, loteId: string) {
       : "CONCLUIDO";
   await db
     .from("fiscoai_xml_lotes")
-    .update({ total_recuperados: recuperados, total_falhas: falhas, status, atualizado_em: new Date().toISOString() })
+    .update({
+      total_recuperados: recuperados,
+      total_falhas: falhas,
+      status,
+      atualizado_em: new Date().toISOString(),
+    })
     .eq("id", loteId);
 }
