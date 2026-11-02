@@ -266,6 +266,22 @@ export const listarCaixaEntradaFiscal = createServerFn({ method: "GET" })
     };
   });
 
+export const processarCaixaEntradaFiscal = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .validator((entrada: unknown) =>
+    z.object({ limite: z.number().int().min(1).max(10).default(5) }).parse(entrada),
+  )
+  .handler(async ({ data, context }) => {
+    const [{ supabaseAdmin }, servico] = await Promise.all([
+      import("@/integrations/supabase/client.server"),
+      import("./recuperacaoXml.server"),
+    ]);
+    return servico.executarWorkerRecuperacao(supabaseAdmin as any, {
+      limite: data.limite,
+      userId: context.userId,
+    });
+  });
+
 export const listarCentralXml = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .validator((entrada: unknown) => listarInput.parse(entrada))

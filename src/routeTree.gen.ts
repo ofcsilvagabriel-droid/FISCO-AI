@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthRouteImport } from './routes/auth'
+import { Route as ApiXmlCronRouteImport } from './routes/api/xml/cron'
 import { Route as ApiXmlWorkerRouteImport } from './routes/api/xml/worker'
 
 const IndexRoute = IndexRouteImport.update({
@@ -23,6 +24,11 @@ const AuthRoute = AuthRouteImport.update({
   path: '/auth',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiXmlCronRoute = ApiXmlCronRouteImport.update({
+  id: '/api/xml/cron',
+  path: '/api/xml/cron',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiXmlWorkerRoute = ApiXmlWorkerRouteImport.update({
   id: '/api/xml/worker',
   path: '/api/xml/worker',
@@ -32,30 +38,34 @@ const ApiXmlWorkerRoute = ApiXmlWorkerRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/api/xml/cron': typeof ApiXmlCronRoute
   '/api/xml/worker': typeof ApiXmlWorkerRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/api/xml/cron': typeof ApiXmlCronRoute
   '/api/xml/worker': typeof ApiXmlWorkerRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/api/xml/cron': typeof ApiXmlCronRoute
   '/api/xml/worker': typeof ApiXmlWorkerRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/auth' | '/api/xml/worker'
+  fullPaths: '/' | '/auth' | '/api/xml/cron' | '/api/xml/worker'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/auth' | '/api/xml/worker'
-  id: '__root__' | '/' | '/auth' | '/api/xml/worker'
+  to: '/' | '/auth' | '/api/xml/cron' | '/api/xml/worker'
+  id: '__root__' | '/' | '/auth' | '/api/xml/cron' | '/api/xml/worker'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthRoute: typeof AuthRoute
+  ApiXmlCronRoute: typeof ApiXmlCronRoute
   ApiXmlWorkerRoute: typeof ApiXmlWorkerRoute
 }
 
@@ -75,6 +85,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/xml/cron': {
+      id: '/api/xml/cron'
+      path: '/api/xml/cron'
+      fullPath: '/api/xml/cron'
+      preLoaderRoute: typeof ApiXmlCronRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/xml/worker': {
       id: '/api/xml/worker'
       path: '/api/xml/worker'
@@ -88,6 +105,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthRoute: AuthRoute,
+  ApiXmlCronRoute: ApiXmlCronRoute,
   ApiXmlWorkerRoute: ApiXmlWorkerRoute,
 }
 export const routeTree = rootRouteImport

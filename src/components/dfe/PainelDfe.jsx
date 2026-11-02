@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listarEmpresasFisco } from "@/modules/empresas/empresas.functions";
 import { baixarDocumentoFiscal, baixarDocumentosFiscaisEmLote, listarDocumentosFiscaisParaExportacao, marcarDocumentosFiscais } from "@/modules/dfe/services/documentosFiscais.functions";
 import { importarXmlManualNoHub } from "@/modules/dfe/services/importacaoManual.functions";
-import { criarLoteRecuperacaoXml, listarCaixaEntradaFiscal, listarCentralXml } from "@/modules/xml/services/recuperacaoXml.functions";
+import { criarLoteRecuperacaoXml, listarCaixaEntradaFiscal, listarCentralXml, processarCaixaEntradaFiscal } from "@/modules/xml/services/recuperacaoXml.functions";
 import { parsearNFe } from "@/modules/xml/services/parsearNFe";
 import { interpretarPlanilhaSefazCsv, prepararItensCaixaEntradaPlanilhaSefaz } from "@/modules/xml/domain/planilhaSefaz";
 
@@ -95,6 +95,16 @@ export default function PainelDfe({ S, C, onImport, onNavigate, empresaInicial =
       aguardandoIdentificacao += resultado.aguardandoIdentificacao;
     }
     return { enfileiradas, duplicadas, identificadas, aguardandoIdentificacao };
+  };
+
+  const processarAgora = async () => {
+    setOcupado("worker"); setErro(""); setAviso("");
+    try {
+      const resultado = await processarCaixaEntradaFiscal({ data: { limite: 5 } });
+      await Promise.all([atualizarCaixa(), selecionada ? atualizar() : Promise.resolve()]);
+      setAviso(resultado.reivindicados ? `${resultado.recuperados} XML(s) recuperado(s); ${resultado.adiados} adiado(s) pelo provedor e ${resultado.falhas} com falha.` : "Nenhuma chave está disponível para processamento agora.");
+    } catch (e) { setErro(erroTexto(e)); }
+    finally { setOcupado(""); }
   };
 
   const confirmarPlanilha = async () => {
@@ -217,11 +227,11 @@ export default function PainelDfe({ S, C, onImport, onNavigate, empresaInicial =
   return <div style={{ display: "grid", gap: 14 }}>
     <header style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
       <div><div style={{ ...S.cardTitle, fontSize: 18 }}>Central de documentos fiscais</div><div style={{ color: C.muted, fontSize: 12, marginTop: 4 }}>Nossa API recebe chaves e XMLs, valida os documentos e os vincula à empresa correta.</div></div>
-      <label style={{ ...S.btn("primary"), cursor: ocupado ? "wait" : "pointer" }}>{ocupado === "arquivo" ? "Processando…" : "Adicionar à Caixa de Entrada"}<input type="file" accept=".xml,.txt,.csv,text/xml,application/xml,text/plain,text/csv" disabled={!!ocupado} onChange={receberArquivo} style={{ display: "none" }}/></label>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}><button onClick={processarAgora} disabled={!!ocupado} style={S.btn("ghost")}>{ocupado === "worker" ? "Consultando…" : "Processar pendências"}</button><label style={{ ...S.btn("primary"), cursor: ocupado ? "wait" : "pointer" }}>{ocupado === "arquivo" ? "Processando…" : "Adicionar à Caixa de Entrada"}<input type="file" accept=".xml,.txt,.csv,text/xml,application/xml,text/plain,text/csv" disabled={!!ocupado} onChange={receberArquivo} style={{ display: "none" }}/></label></div>
     </header>
     {erro && <div role="alert" style={S.alert("error")}>{erro}</div>}
     {aviso && <div role="status" style={S.alert("success")}>{aviso}</div>}
-    <div role="status" style={S.alert("warn")}><strong>API própria ativa:</strong> a fila, validação e armazenamento já estão operacionais. A recuperação externa permanece aguardando a conexão de um worker autorizado.</div>
+    <div role="status" style={S.alert("success")}><strong>Worker conectado:</strong> o FiscoAI consulta o provedor público, valida o XML e somente depois o vincula à empresa confirmada. Limites externos geram espera automática, sem perder a chave.</div>
 
     <section style={{ ...S.card, display: "grid", gap: 12 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 10 }}>

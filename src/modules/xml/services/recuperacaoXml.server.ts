@@ -4,12 +4,17 @@ import { randomUUID } from "node:crypto";
 const MAX_ITENS = 50;
 const TENTATIVAS_MAXIMAS = 5;
 
-export async function reivindicarItensRecuperacao(db: any, limite = 10) {
+export async function reivindicarItensRecuperacao(db: any, limite = 10, userId?: string) {
   const lockToken = randomUUID();
-  const { data, error } = await db.rpc("fiscoai_reivindicar_itens_xml", {
-    p_limite: Math.max(1, Math.min(Number(limite) || 10, MAX_ITENS)),
+  const parametros = {
+    p_limite: Math.max(1, Math.min(Number(limite) || 10, userId ? 10 : MAX_ITENS)),
     p_lock_token: lockToken,
-  });
+    ...(userId ? { p_user_id: userId } : {}),
+  };
+  const { data, error } = await db.rpc(
+    userId ? "fiscoai_reivindicar_itens_xml_usuario" : "fiscoai_reivindicar_itens_xml",
+    parametros,
+  );
   if (error) throw new Error(`Não foi possível reivindicar a fila: ${error.message}`);
   return {
     lockToken,
@@ -20,6 +25,54 @@ export async function reivindicarItensRecuperacao(db: any, limite = 10) {
       chaveAcesso: item.chave_acesso,
       tentativa: item.tentativas,
     })),
+  };
+}
+
+export async function executarWorkerRecuperacao(
+  db: any,
+  entrada: { limite?: number; userId?: string } = {},
+) {
+  const { consultarXmlConsultaDanfe, ErroConsultaDanfe } = await import("./consultaDanfe.server");
+  const lote = await reivindicarItensRecuperacao(db, entrada.limite || 5, entrada.userId);
+  const resultados = await Promise.all(
+    lote.itens.map(async (item: any) => {
+      let xml: string;
+      try {
+        xml = await consultarXmlConsultaDanfe(item.chaveAcesso);
+      } catch (erro) {
+        const conhecido = erro instanceof ErroConsultaDanfe;
+        const falha = await falharItemRecuperacao(db, {
+          itemId: item.id,
+          lockToken: lote.lockToken,
+          codigo: conhecido ? erro.codigo : "FALHA_PROVEDOR",
+          mensagem: erro instanceof Error ? erro.message : "O provedor externo não devolveu o XML.",
+          repetivel: conhecido ? erro.repetivel : true,
+        });
+        return { itemId: item.id, resultado: falha.status };
+      }
+      try {
+        const concluido = await concluirItemRecuperacao(db, {
+          itemId: item.id,
+          lockToken: lote.lockToken,
+          xml,
+        });
+        return {
+          itemId: item.id,
+          resultado: "RECUPERADO",
+          aguardandoEmpresa: "aguardandoEmpresa" in concluido,
+        };
+      } catch {
+        return { itemId: item.id, resultado: "XML_REJEITADO" };
+      }
+    }),
+  );
+  return {
+    reivindicados: resultados.length,
+    recuperados: resultados.filter((item) => item.resultado === "RECUPERADO").length,
+    adiados: resultados.filter((item) => item.resultado === "PROVEDOR_INDISPONIVEL").length,
+    falhas: resultados.filter((item) =>
+      ["FALHA_DEFINITIVA", "XML_REJEITADO"].includes(item.resultado),
+    ).length,
   };
 }
 
