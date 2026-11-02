@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { configurarIntegracaoXmlEmpresa, importarEmpresasFisco, listarEmpresasFisco, obterPainelEmpresa, removerAcessoSefazEmpresa, revelarAcessoSefazEmpresa, salvarAcessoSefazEmpresa, salvarEmpresaFisco } from "@/modules/empresas/empresas.functions";
 import { excluirCertificadoDfe, salvarCertificadoDfe } from "@/modules/dfe/services/certificados.functions";
+import PainelDfe from "@/components/dfe/PainelDfe";
 
 const REGIMES = [["SN", "Simples Nacional"], ["LP", "Lucro Presumido"], ["LR", "Lucro Real"], ["MEI", "MEI"], ["OUTRO", "Outro"]];
 const CNPJ_VAZIO = "";
@@ -303,10 +304,7 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
               </form>}
             </div>}
 
-            {aba === "documentos" && <div style={{ ...S.card, display: "grid", gap: 12 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}><div><div style={S.cardTitle}>Documentos fiscais</div><div style={{ color: C.muted, fontSize: 11 }}>XMLs completos vinculados pelo CNPJ do destinatário.</div></div><button onClick={() => onNavigate?.("dfe", empresa.cnpj)} style={S.btn("primary")}>Abrir Central de Documentos</button></div>
-              {!painel.documentos.length ? <div style={{ color: C.muted, padding: "18px 0" }}>Nenhum XML completo vinculado.</div> : <div style={{ display: "grid" }}>{painel.documentos.map(doc => <div key={doc.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "10px 0", borderBottom: `1px solid ${C.border}`, flexWrap: "wrap" }}><div><strong>NF-e {doc.numero_nfe || "—"}</strong>{doc.emitente_nome ? ` · ${doc.emitente_nome}` : ""}<div style={{ color: C.muted, fontSize: 10, marginTop: 3 }}>{doc.data_emissao ? new Date(doc.data_emissao).toLocaleDateString("pt-BR") : "Sem data"} · {doc.origem === "ACERVO_LEGADO" ? "Acervo anterior" : doc.origem === "API_PROPRIA" ? "API própria" : "Importação manual"}</div></div><span style={{ color: doc.processamento_status === "falha" ? "#fca5a5" : "#34d399", fontSize: 11, fontWeight: 700 }}>{doc.processamento_status}</span></div>)}</div>}
-            </div>}
+            {aba === "documentos" && <PainelDfe S={S} C={C} empresaInicial={empresa.cnpj} empresaFixa />}
 
             {aba === "integracoes" && <div style={{ ...S.card, display: "grid", gap: 12 }}>
               <div><div style={S.cardTitle}>Recuperação de XML</div><div style={{ color: C.muted, fontSize: 11 }}>A API própria controla a fila; somente um worker autorizado poderá consultar o provedor externo.</div></div>

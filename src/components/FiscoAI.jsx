@@ -20,9 +20,13 @@ import { CongelamentoService } from "@/modules/fiscal/domain/services/Congelamen
 import MemoriaObsidian from "@/components/MemoriaObsidian";
 import CalculadoraFlutuante from "@/components/CalculadoraFlutuante";
 import PainelDfe from "@/components/dfe/PainelDfe";
+import PainelImportacaoPlanilhas from "@/components/dfe/PainelImportacaoPlanilhas";
+import PainelAuditoriaRecuperacao from "@/components/dfe/PainelAuditoriaRecuperacao";
 import PainelEmpresas from "@/components/empresas/PainelEmpresas";
 import { listarCertificadosDfe } from "@/modules/dfe/services/certificados.functions";
 import { importarXmlManualNoHub } from "@/modules/dfe/services/importacaoManual.functions";
+import { baixarDocumentoFiscal, listarDocumentosPendentesProcessamento, marcarDocumentosFiscais } from "@/modules/dfe/services/documentosFiscais.functions";
+import { listarPendenciasXml, marcarNotificacaoXmlLida } from "@/modules/xml/services/recuperacaoXml.functions";
 import { listarEmpresasFisco } from "@/modules/empresas/empresas.functions";
 import { HistoricoApuracaoService } from "@/modules/fiscal/domain/services/HistoricoApuracaoService";
 import { HistoricoImportacaoService, identidadeImportacao, mesclarHistorico } from "@/modules/fiscal/domain/services/HistoricoImportacaoService";
@@ -105,6 +109,8 @@ export function upsertRegistroArquivo(arq, nota, produtos, calculos) {
     infoComplementar: nota.info_complementar || "",
     infoAdicionalFisco: nota.info_adicional_fisco || "",
     destinatarioIe: nota.destinatario_ie || "",
+    destinatarioCnpj: nota.destinatario_cnpj || "",
+    destinatarioNome: nota.destinatario_nome || "",
     emitenteNome: nota.emitente_nome || "",
     emitenteCnpj: nota.emitente_cnpj || "",
     ufOrigem: nota.uf_origem || "",
@@ -3159,6 +3165,9 @@ export default function App(){
   const[alertasCertificados,setAlertasCertificados]=useState([]);
   const[empresasCadastro,setEmpresasCadastro]=useState([]);
   const[empresaContexto,setEmpresaContexto]=useState("");
+  const[pendenciasXml,setPendenciasXml]=useState({total:0,empresas:[],notificacoes:[],naoLidas:0});
+  const[painelPendencias,setPainelPendencias]=useState(false);
+  const[auditoriaAberta,setAuditoriaAberta]=useState(false);
   useEffect(()=>{
     let ativo=true;
     Promise.all([loadArquivo(),HistoricoImportacaoService.load(),HistoricoApuracaoService.sincronizar()])
@@ -3200,6 +3209,17 @@ export default function App(){
     if(nuvemFiscal!=="ativa")return;
     atualizarEmpresasCadastro().catch(()=>{});
   },[nuvemFiscal,atualizarEmpresasCadastro]);
+  const atualizarPendenciasXml=useCallback(async()=>setPendenciasXml(await listarPendenciasXml()),[]);
+  useEffect(()=>{
+    if(nuvemFiscal!=="ativa")return;
+    atualizarPendenciasXml().catch(()=>{});
+    const timer=window.setInterval(()=>atualizarPendenciasXml().catch(()=>{}),30000);
+    return()=>window.clearInterval(timer);
+  },[nuvemFiscal,atualizarPendenciasXml]);
+  const lerNotificacaoXml=useCallback(async(id)=>{
+    await marcarNotificacaoXmlLida({data:{id}});
+    await atualizarPendenciasXml();
+  },[atualizarPendenciasXml]);
   const[arqEmpresaSel,setArqEmpresaSel]=useState(null);
   const[arqMesSel,setArqMesSel]=useState(null);
   const[arqMsg,setArqMsg]=useState(null);
@@ -3459,6 +3479,35 @@ export default function App(){
     return resumo;
   },[arquivo,historico,ufOrigem,ufDestino,modoCalculo]);
 
+  const processandoRecuperadosRef=useRef(false);
+  useEffect(()=>{
+    if(nuvemFiscal!=="ativa"||!dadosProntos)return;
+    let ativo=true;
+    const processar=async()=>{
+      if(processandoRecuperadosRef.current)return;
+      processandoRecuperadosRef.current=true;
+      try{
+        const pendentes=await listarDocumentosPendentesProcessamento();
+        if(!ativo||!pendentes.length)return;
+        const arquivos=await Promise.all(pendentes.map(async documento=>{
+          const baixado=await baixarDocumentoFiscal({data:{id:documento.id}});
+          return{name:`${documento.chave_acesso}.xml`,text:async()=>baixado.xml,fiscoaiHubDocumento:true};
+        }));
+        const resumo=await importarLote(arquivos);
+        await marcarDocumentosFiscais({data:{items:pendentes.map((documento,indice)=>({
+          id:documento.id,
+          status:resumo?.detalhes?.[indice]?.status==="ok"?"importada":"falha",
+          erro:resumo?.detalhes?.[indice]?.motivo,
+        }))}});
+      }catch(ex){
+        if(ativo)setErroPersistencia(`Não foi possível integrar um XML recuperado ao Arquivo Fiscal: ${ex?.message||ex}`);
+      }finally{processandoRecuperadosRef.current=false;}
+    };
+    processar();
+    const timer=window.setInterval(processar,30000);
+    return()=>{ativo=false;window.clearInterval(timer);};
+  },[nuvemFiscal,dadosProntos,importarLote]);
+
   // ============================================================
   // PONTE DO AGENTE LOCAL — usada pela API localhost do Electron.
   // Não expõe dados para a internet; a API escuta apenas em 127.0.0.1.
@@ -3671,6 +3720,7 @@ export default function App(){
   const TABS=[
     {id:"importar",icon:"📂",label:"Importar NF-e"},
     {id:"empresas",icon:"🏢",label:"Empresas"},
+    {id:"planilhas",icon:"📊",label:"Importar Planilhas"},
     {id:"dfe",icon:"🗂️",label:"Docs Fiscais"},
     {id:"analise",icon:"🔍",label:"Análise Fiscal",disabled:!analisado},
     {id:"calculo",icon:"🧾",label:"Cálculo ICMS",disabled:!analisado},
@@ -3680,6 +3730,7 @@ export default function App(){
     {id:"arquivo",icon:"🗄️",label:`Arquivo Fiscal${Object.keys(arquivo).length?` (${Object.keys(arquivo).length})`:""}`},
     {id:"obsidian",icon:"🔒",label:"Memória Protegida"},
   ];
+  const notificacaoExplicita=pendenciasXml.notificacoes.find(item=>!item.lida_em);
 
 
   const fmt=(v)=>"R$ "+parseFloat(v||0).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -3727,6 +3778,7 @@ export default function App(){
           </div>
         </div>
         <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",justifyContent:"flex-end"}}>
+          {nuvemFiscal==="ativa"&&<button style={{...S.btn("ghost"),position:"relative"}} onClick={()=>setPainelPendencias(v=>!v)} aria-expanded={painelPendencias}>🔔 Pendências{pendenciasXml.total?` (${pendenciasXml.total})`:""}{pendenciasXml.naoLidas>0&&<span style={{position:"absolute",right:-5,top:-6,minWidth:17,height:17,borderRadius:20,display:"grid",placeItems:"center",background:"#ef4444",color:"white",fontSize:9,fontWeight:800}}>{pendenciasXml.naoLidas}</span>}</button>}
           {analisado&&<span style={{...S.badge,background:`rgba(${C.green},0.12)`,color:`rgb(${C.green})`,borderColor:`rgba(${C.green},0.3)`}}>{produtos.length} produtos</span>}
           {analisado&&<button style={S.btn("primary")} onClick={salvarNoArquivo}>💾 Salvar</button>}
           {analisado&&<button style={S.btn("ghost")} onClick={reset}>🔄 Nova</button>}
@@ -3737,6 +3789,14 @@ export default function App(){
           }}>🚪 Sair</button>}
         </div>
       </header>
+
+      {painelPendencias&&<div style={{position:"fixed",right:18,top:68,zIndex:1000,width:"min(430px,calc(100vw - 36px))",maxHeight:"70vh",overflow:"auto",...S.card,boxShadow:"0 20px 55px rgba(0,0,0,.45)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center"}}><div style={S.cardTitle}>Pendências por empresa</div><button style={S.btn("ghost")} onClick={()=>setPainelPendencias(false)}>Fechar</button></div>
+        {!pendenciasXml.empresas.length?<div style={{color:C.muted,padding:"18px 0"}}>Nenhuma pendência de XML.</div>:pendenciasXml.empresas.map(item=><button key={item.cnpj} onClick={()=>{if(item.cnpj!=="SEM_EMPRESA")setEmpresaContexto(item.cnpj);setAuditoriaAberta(true);setPainelPendencias(false);}} style={{...S.histItem(false),width:"100%",textAlign:"left",cursor:"pointer",marginTop:6}}><strong>{item.nome}</strong><div style={{color:C.muted,fontSize:10,marginTop:3}}>{item.total} pendência(s) · {item.falhas} falha(s)</div></button>)}
+        <div style={{display:"flex",justifyContent:"flex-end",marginTop:10}}><button style={S.btn("primary")} onClick={()=>{setAuditoriaAberta(true);setPainelPendencias(false);}}>Abrir auditoria</button></div>
+      </div>}
+
+      {notificacaoExplicita&&<div role="alert" style={{...S.alert(notificacaoExplicita.severidade==="CRITICA"?"error":"warn"),margin:"10px 12px",display:"flex",justifyContent:"space-between",gap:12,alignItems:"center",flexWrap:"wrap"}}><div><strong>{notificacaoExplicita.titulo}</strong><div style={{fontSize:11,marginTop:3}}>{notificacaoExplicita.mensagem}</div></div><button onClick={()=>lerNotificacaoXml(notificacaoExplicita.id).catch(e=>setErroPersistencia(`Não foi possível marcar a notificação: ${e?.message||e}`))} style={S.btn("ghost")}>Marcar como lida</button></div>}
 
       <div style={S.shell} className="fisco-shell">
         {/* SIDEBAR */}
@@ -3759,11 +3819,17 @@ export default function App(){
 
         <main style={S.main} className="animate-fadeIn" key={tab}>
 
+        {auditoriaAberta&&<PainelAuditoriaRecuperacao S={S} C={C} onClose={()=>{setAuditoriaAberta(false);atualizarPendenciasXml().catch(()=>{});}}/>}
+
         {empresaContexto&&tab!=="empresas"&&<div role="status" style={{...S.card,padding:"9px 12px",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}><div style={{fontSize:11,color:C.muted}}>Empresa ativa: <strong style={{color:C.text}}>{empresasPorCnpj.get(empresaContexto)?.razao_social||formatCNPJ(empresaContexto)}</strong></div><div style={{display:"flex",gap:7}}><button style={S.btn("ghost")} onClick={()=>navegarEmpresa("empresas",empresaContexto)}>Abrir cadastro</button><button style={S.btn("ghost")} onClick={()=>setEmpresaContexto("")}>Limpar filtro</button></div></div>}
 
         {tab==="dfe"&&(nuvemFiscal==="ativa"
-          ? <PainelDfe S={S} C={C} onImport={importarLote} onNavigate={navegarEmpresa} empresaInicial={empresaContexto}/>
+          ? <PainelDfe S={S} C={C} empresaInicial={empresaContexto}/>
           : <div style={S.card}>Entre na sua conta para cadastrar certificados e buscar XMLs com segurança. <a href="/auth">Abrir login</a></div>)}
+
+        {tab==="planilhas"&&(nuvemFiscal==="ativa"
+          ? <PainelImportacaoPlanilhas S={S} C={C}/>
+          : <div style={S.card}>Entre na sua conta para importar planilhas e acompanhar a recuperação dos XMLs. <a href="/auth">Abrir login</a></div>)}
 
         {tab==="empresas"&&(nuvemFiscal==="ativa"
           ? <PainelEmpresas S={S} C={C} arquivo={arquivo} historico={historico} memoria={histApuracoes} onNavigate={navegarEmpresa} empresaInicial={empresaContexto} onEmpresasChange={setEmpresasCadastro}/>

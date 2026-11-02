@@ -4,6 +4,25 @@ const ARQUIVO_KEY = "fiscoai:arquivo:v1";
 
 export type ArquivoFiscal = Record<string, unknown>;
 
+function normalizarCompetencias(arquivo: ArquivoFiscal): ArquivoFiscal {
+  let alterado = false;
+  const resultado: ArquivoFiscal = {};
+  for (const [chave, valor] of Object.entries(arquivo || {})) {
+    const empresa = valor as { registros?: Array<{ dataEmissao?: string; mesAno?: string }> } | null;
+    if (!Array.isArray(empresa?.registros)) { resultado[chave] = valor; continue; }
+    const registros = empresa.registros.map(registro => {
+      const encontrado = String(registro.dataEmissao || "").match(/^(\d{4})-(\d{2})/);
+      if (!encontrado) return registro;
+      const competencia = `${encontrado[1]}-${encontrado[2]}`;
+      if (registro.mesAno === competencia) return registro;
+      alterado = true;
+      return { ...registro, mesAno: competencia };
+    });
+    resultado[chave] = alterado ? { ...(valor as object), registros } : valor;
+  }
+  return alterado ? resultado : arquivo;
+}
+
 function mesclarArquivos(remoto: ArquivoFiscal, local: ArquivoFiscal): ArquivoFiscal {
   if (!remoto || typeof remoto !== "object" || Array.isArray(remoto)) return local;
   const combinado = { ...local, ...remoto };
@@ -24,7 +43,7 @@ export const ArquivoFiscalService = {
   async load(): Promise<ArquivoFiscal> {
     const dados = await carregarFiscal<ArquivoFiscal>("arquivo", ARQUIVO_KEY, {}, mesclarArquivos);
     if (!dados || typeof dados !== "object" || Array.isArray(dados)) throw new Error("Arquivo Fiscal salvo é inválido.");
-    return dados;
+    return normalizarCompetencias(dados);
   },
   save(data: ArquivoFiscal): Promise<void> {
     return salvarFiscal("arquivo", ARQUIVO_KEY, data);

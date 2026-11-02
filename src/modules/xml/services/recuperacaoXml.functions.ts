@@ -24,6 +24,12 @@ const criarLoteInput = z
     itens: z.array(itemEntrada).min(1).max(500).optional(),
     origem: z.enum(["CHAVES_COLADAS", "ARQUIVO_CHAVES"]).default("CHAVES_COLADAS"),
     nomeArquivo: z.string().trim().max(255).optional().nullable(),
+    arquivoSha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional()
+      .nullable(),
+    totalLinhas: z.number().int().min(0).optional(),
   })
   .refine((entrada) => Boolean(entrada.chaves?.length || entrada.itens?.length), {
     message: "Informe ao menos uma chave de acesso.",
@@ -62,30 +68,45 @@ export const criarLoteRecuperacaoXml = createServerFn({ method: "POST" })
     const empresasPorCnpj = new Map(empresas.map((empresa: any) => [empresa.cnpj, empresa]));
     const atribuicoes = itensEntrada.map((item) => ({
       item,
-      empresa: item.destinatarioCnpj ? empresasPorCnpj.get(item.destinatarioCnpj) || null : null,
+      empresaIndicada: item.destinatarioCnpj
+        ? empresasPorCnpj.get(item.destinatarioCnpj) || null
+        : null,
     }));
     const empresasAtribuidas = [
       ...new Map(
-        atribuicoes.filter((item) => item.empresa).map((item) => [item.empresa.cnpj, item.empresa]),
+        atribuicoes
+          .filter((item) => item.empresaIndicada)
+          .map((item) => [item.empresaIndicada.cnpj, item.empresaIndicada]),
       ).values(),
     ];
-    const empresaUnica =
-      empresasAtribuidas.length === 1 && atribuicoes.every((item) => item.empresa)
-        ? empresasAtribuidas[0]
-        : null;
+    if (data.arquivoSha256) {
+      const { data: arquivoExistente, error: arquivoErro } = await db
+        .from("fiscoai_xml_lotes")
+        .select("id,criado_em")
+        .eq("user_id", context.userId)
+        .eq("arquivo_sha256", data.arquivoSha256)
+        .maybeSingle();
+      if (arquivoErro) throw new Error(arquivoErro.message);
+      if (arquivoExistente) {
+        throw new Error(`Esta planilha já foi importada em ${new Date(arquivoExistente.criado_em).toLocaleString("pt-BR")}.`);
+      }
+    }
 
     const { data: lote, error: loteErro } = await db
       .from("fiscoai_xml_lotes")
       .insert({
         user_id: context.userId,
-        empresa_id: empresaUnica?.empresa_id || null,
-        empresa_cnpj: empresaUnica?.cnpj || null,
+        empresa_id: null,
+        empresa_cnpj: null,
         origem_entrada: data.origem,
         total_itens: chaves.length,
         nome_arquivo: data.nomeArquivo || null,
+        arquivo_sha256: data.arquivoSha256 || null,
+        total_linhas: data.totalLinhas || itensEntrada.length,
         metadados_entrada: {
           destinatario_na_planilha: destinos.length > 0,
-          empresas_identificadas: empresasAtribuidas.length,
+          empresas_indicadas: empresasAtribuidas.length,
+          vinculo_definitivo: "XML_COMPLETO",
         },
       })
       .select("id")
@@ -102,11 +123,11 @@ export const criarLoteRecuperacaoXml = createServerFn({ method: "POST" })
     const novas = atribuicoes.filter(({ item }) => !jaExistentes.has(item.chave));
     if (novas.length) {
       const { error: itensErro } = await db.from("fiscoai_xml_itens").insert(
-        novas.map(({ item, empresa }) => ({
+        novas.map(({ item }) => ({
           lote_id: lote.id,
           user_id: context.userId,
-          empresa_id: empresa?.empresa_id || null,
-          empresa_cnpj: empresa?.cnpj || null,
+          empresa_id: null,
+          empresa_cnpj: null,
           chave_acesso: item.chave,
           destinatario_cnpj_informado: item.destinatarioCnpj || null,
           destinatario_nome_informado: item.destinatarioNome || null,
@@ -115,7 +136,7 @@ export const criarLoteRecuperacaoXml = createServerFn({ method: "POST" })
           numero_nfe_informado: item.numeroNfe || null,
           data_emissao_informada: item.dataEmissao || null,
           linha_origem: item.linha || null,
-          identificacao_origem: item.destinatarioCnpj ? "PLANILHA" : "PENDENTE",
+          identificacao_origem: "PENDENTE",
         })),
       );
       if (itensErro) throw new Error(itensErro.message);
@@ -131,16 +152,16 @@ export const criarLoteRecuperacaoXml = createServerFn({ method: "POST" })
       .eq("user_id", context.userId);
     await db.from("fiscoai_xml_auditoria").insert({
       user_id: context.userId,
-      empresa_id: empresaUnica?.empresa_id || null,
-      empresa_cnpj: empresaUnica?.cnpj || null,
+      empresa_id: null,
+      empresa_cnpj: null,
       operacao: "IMPORTAR_CAIXA_ENTRADA",
       status: "SUCESSO",
-      mensagem: `${novas.length} chave(s) recebida(s) pela Caixa de Entrada Fiscal.`,
+      mensagem: `${novas.length} chave(s) recebida(s) pelo ambiente de Importação de Planilhas.`,
       detalhes: {
         lote_id: lote.id,
         nome_arquivo: data.nomeArquivo || null,
-        identificadas: novas.filter((item) => item.empresa).length,
-        aguardando_identificacao: novas.filter((item) => !item.empresa).length,
+        empresas_indicadas: empresasAtribuidas.length,
+        aguardando_identificacao: novas.length,
       },
       finalizado_em: new Date().toISOString(),
     });
@@ -148,9 +169,111 @@ export const criarLoteRecuperacaoXml = createServerFn({ method: "POST" })
       loteId: lote.id,
       enfileiradas: novas.length,
       duplicadas: chaves.length - novas.length,
-      identificadas: novas.filter((item) => item.empresa).length,
-      aguardandoIdentificacao: novas.filter((item) => !item.empresa).length,
+      identificadas: 0,
+      indicadas: novas.filter((item) => item.item.destinatarioCnpj).length,
+      aguardandoIdentificacao: novas.length,
     };
+  });
+
+export const listarImportacoesPlanilhas = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data, error } = await (supabaseAdmin as any)
+      .from("fiscoai_xml_lotes")
+      .select(
+        "id,nome_arquivo,arquivo_sha256,status,total_linhas,total_itens,total_recuperados,total_falhas,criado_em,atualizado_em",
+      )
+      .eq("user_id", context.userId)
+      .eq("origem_entrada", "ARQUIVO_CHAVES")
+      .order("criado_em", { ascending: false })
+      .limit(50);
+    if (error) throw new Error(error.message);
+    return data || [];
+  });
+
+export const listarPendenciasXml = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const db = supabaseAdmin as any;
+    const [itens, empresas, notificacoes] = await Promise.all([
+      db
+        .from("fiscoai_xml_itens")
+        .select(
+          "id,chave_acesso,empresa_cnpj,destinatario_cnpj_informado,status,ultimo_codigo,ultimo_erro,atualizado_em",
+        )
+        .eq("user_id", context.userId)
+        .not("status", "in", '("ARMAZENADA","IMPORTADA","DUPLICADA")')
+        .order("atualizado_em", { ascending: false })
+        .limit(500),
+      db
+        .from("fiscoai_empresas")
+        .select("cnpj,razao_social,nome_fantasia")
+        .eq("user_id", context.userId),
+      db
+        .from("fiscoai_xml_notificacoes")
+        .select(
+          "id,empresa_cnpj,item_id,tipo,severidade,titulo,mensagem,lida_em,resolvida_em,criado_em",
+        )
+        .eq("user_id", context.userId)
+        .is("resolvida_em", null)
+        .order("criado_em", { ascending: false })
+        .limit(100),
+    ]);
+    const erro = [itens, empresas, notificacoes].find((resultado) => resultado.error)?.error;
+    if (erro) throw new Error(erro.message);
+    const nomes = new Map(
+      (empresas.data || []).map((empresa: any) => [
+        empresa.cnpj,
+        empresa.nome_fantasia || empresa.razao_social,
+      ]),
+    );
+    const porEmpresa = new Map<string, any>();
+    for (const item of itens.data || []) {
+      const cnpj = item.empresa_cnpj || item.destinatario_cnpj_informado || "SEM_EMPRESA";
+      if (!porEmpresa.has(cnpj))
+        porEmpresa.set(cnpj, {
+          cnpj,
+          nome: nomes.get(cnpj) || (cnpj === "SEM_EMPRESA" ? "Aguardando identificação" : cnpj),
+          total: 0,
+          falhas: 0,
+        });
+      const resumo = porEmpresa.get(cnpj);
+      resumo.total += 1;
+      if (
+        [
+          "NAO_ENCONTRADA",
+          "XML_INCOMPLETO",
+          "PROVEDOR_INDISPONIVEL",
+          "BLOQUEADA",
+          "FALHA_DEFINITIVA",
+        ].includes(item.status)
+      )
+        resumo.falhas += 1;
+    }
+    const abertas = notificacoes.data || [];
+    return {
+      total: (itens.data || []).length,
+      empresas: [...porEmpresa.values()].sort((a, b) => b.total - a.total),
+      notificacoes: abertas,
+      naoLidas: abertas.filter((item: any) => !item.lida_em).length,
+    };
+  });
+
+export const marcarNotificacaoXmlLida = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .validator((entrada: unknown) => z.object({ id: z.string().uuid() }).parse(entrada))
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { error } = await (supabaseAdmin as any)
+      .from("fiscoai_xml_notificacoes")
+      .update({ lida_em: new Date().toISOString(), atualizado_em: new Date().toISOString() })
+      .eq("id", data.id)
+      .eq("user_id", context.userId)
+      .is("lida_em", null);
+    if (error) throw new Error(error.message);
+    return { ok: true };
   });
 
 export const listarCaixaEntradaFiscal = createServerFn({ method: "GET" })

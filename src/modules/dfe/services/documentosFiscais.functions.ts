@@ -7,10 +7,46 @@ const documentoInput = z.object({ id: z.string().uuid() });
 const documentosLoteInput = z.object({ ids: z.array(z.string().uuid()).min(1).max(25) });
 const exportacaoInput = z.object({
   cnpj: z.string().regex(/^[0-9]{14}$/),
-  competencia: z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/),
+  competencia: z
+    .string()
+    .regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)
+    .optional()
+    .nullable(),
+  uf: z
+    .string()
+    .regex(/^[A-Z]{2}$/)
+    .optional()
+    .nullable(),
   pagina: z.number().int().min(0).default(0),
   limite: z.number().int().min(1).max(200).default(200),
 });
+
+const indiceInput = z.object({ cnpj: z.string().regex(/^[0-9]{14}$/) });
+
+export const listarIndiceAcervoXml = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .validator((entrada: unknown) => indiceInput.parse(entrada))
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: documentos, error } = await (supabaseAdmin as any)
+      .from("fiscoai_dfe_documentos")
+      .select("competencia,uf_origem")
+      .eq("user_id", context.userId)
+      .eq("cnpj", data.cnpj)
+      .eq("tipo_conteudo", "XML_COMPLETO")
+      .not("competencia", "is", null)
+      .order("competencia", { ascending: false })
+      .limit(5000);
+    if (error) throw new Error(error.message);
+    const indice: Record<string, Record<string, number>> = {};
+    for (const documento of documentos || []) {
+      const competencia = documento.competencia || "sem-competencia";
+      const uf = documento.uf_origem || "--";
+      indice[competencia] ||= {};
+      indice[competencia][uf] = (indice[competencia][uf] || 0) + 1;
+    }
+    return { indice, total: (documentos || []).length };
+  });
 const processamentoInput = z.object({
   items: z
     .array(
@@ -23,6 +59,22 @@ const processamentoInput = z.object({
     .min(1)
     .max(100),
 });
+
+export const listarDocumentosPendentesProcessamento = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data, error } = await (supabaseAdmin as any)
+      .from("fiscoai_dfe_documentos")
+      .select("id,cnpj,chave_acesso,numero_nfe,uf_origem,uf_destino,data_emissao")
+      .eq("user_id", context.userId)
+      .eq("tipo_conteudo", "XML_COMPLETO")
+      .eq("processamento_status", "pendente")
+      .order("data_emissao", { ascending: true })
+      .limit(25);
+    if (error) throw new Error(error.message);
+    return data || [];
+  });
 
 export const marcarDocumentosFiscais = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -89,20 +141,20 @@ export const listarDocumentosFiscaisParaExportacao = createServerFn({ method: "P
   .handler(async ({ data, context }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const db = supabaseAdmin as any;
-    const [ano, mes] = data.competencia.split("-").map(Number);
-    const inicio = `${data.competencia}-01`;
-    const proximoMes = new Date(Date.UTC(ano, mes, 1)).toISOString().slice(0, 10);
     const inicioPagina = data.pagina * data.limite;
-    const { data: documentos, error } = await db
+    let consulta = db
       .from("fiscoai_dfe_documentos")
-      .select("id,chave_acesso,numero_nfe,serie_nfe,data_emissao")
+      .select("id,chave_acesso,numero_nfe,serie_nfe,data_emissao,competencia,uf_origem")
       .eq("user_id", context.userId)
       .eq("cnpj", data.cnpj)
       .eq("tipo_conteudo", "XML_COMPLETO")
-      .gte("data_emissao", inicio)
-      .lt("data_emissao", proximoMes)
-      .order("data_emissao", { ascending: true })
-      .range(inicioPagina, inicioPagina + data.limite - 1);
+      .order("data_emissao", { ascending: true });
+    if (data.competencia) consulta = consulta.eq("competencia", data.competencia);
+    if (data.uf) consulta = consulta.eq("uf_origem", data.uf);
+    const { data: documentos, error } = await consulta.range(
+      inicioPagina,
+      inicioPagina + data.limite - 1,
+    );
     if (error) throw new Error(error.message);
     return {
       documentos: documentos || [],

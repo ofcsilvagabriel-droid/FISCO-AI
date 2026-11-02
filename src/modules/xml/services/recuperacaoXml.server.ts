@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 
 const MAX_ITENS = 50;
-const TENTATIVAS_MAXIMAS = 5;
+const TENTATIVAS_POR_CICLO = 5;
 
 export async function reivindicarItensRecuperacao(db: any, limite = 10, userId?: string) {
   const lockToken = randomUUID();
@@ -142,6 +142,19 @@ export async function concluirItemRecuperacao(
         detalhes: { chave_acesso: item.chave_acesso },
         finalizado_em: agora,
       });
+      await db.from("fiscoai_xml_notificacoes").upsert(
+        {
+          user_id: item.user_id,
+          empresa_cnpj: null,
+          item_id: item.id,
+          fingerprint: `${item.id}:DESTINATARIO_NAO_CADASTRADO`,
+          tipo: "DESTINATARIO_NAO_CADASTRADO",
+          severidade: "ATENCAO",
+          titulo: "Empresa destinatária não cadastrada",
+          mensagem: `O XML ${item.chave_acesso} foi recuperado, mas o destinatário ainda não está cadastrado.`,
+        },
+        { onConflict: "user_id,fingerprint", ignoreDuplicates: true },
+      );
       await atualizarTotaisLote(db, item.lote_id);
       return { aguardandoEmpresa: true, destinatarioCnpj: identificado.destinatario_cnpj };
     }
@@ -218,6 +231,12 @@ export async function concluirItemRecuperacao(
     },
     finalizado_em: agora,
   });
+  await db
+    .from("fiscoai_xml_notificacoes")
+    .update({ resolvida_em: agora, atualizado_em: agora })
+    .eq("user_id", item.user_id)
+    .eq("item_id", item.id)
+    .is("resolvida_em", null);
   await atualizarTotaisLote(db, item.lote_id);
   await db
     .from("fiscoai_empresa_integracoes")
@@ -246,17 +265,21 @@ export async function falharItemRecuperacao(
 ) {
   const { data: item, error } = await db
     .from("fiscoai_xml_itens")
-    .select("id,lote_id,user_id,empresa_id,empresa_cnpj,tentativas")
+    .select("id,lote_id,user_id,empresa_id,empresa_cnpj,tentativas,ciclo_tentativas,chave_acesso")
     .eq("id", entrada.itemId)
     .eq("lock_token", entrada.lockToken)
     .eq("status", "CONSULTANDO")
     .maybeSingle();
   if (error || !item) throw new Error("Item não encontrado ou concessão do worker expirada.");
-  const repetivel = entrada.repetivel !== false && item.tentativas < TENTATIVAS_MAXIMAS;
+  const repetivel = entrada.repetivel !== false;
+  const fimDoCiclo = Number(item.ciclo_tentativas || 0) >= TENTATIVAS_POR_CICLO;
   const agora = new Date();
-  const proxima = repetivel
-    ? new Date(agora.getTime() + Math.min(24, 2 ** item.tentativas) * 60 * 60 * 1000).toISOString()
-    : null;
+  const esperaMinutos = repetivel
+    ? fimDoCiclo
+      ? 360
+      : Math.min(60, 2 ** Math.max(0, Number(item.ciclo_tentativas || 1) - 1))
+    : 24 * 60;
+  const proxima = new Date(agora.getTime() + esperaMinutos * 60 * 1000).toISOString();
   const status = repetivel ? "PROVEDOR_INDISPONIVEL" : "FALHA_DEFINITIVA";
   const mensagem = entrada.mensagem.slice(0, 500);
   const { error: atualizacaoErro } = await db
@@ -268,6 +291,7 @@ export async function falharItemRecuperacao(
       lock_ate: "1970-01-01T00:00:00.000Z",
       ultimo_codigo: entrada.codigo?.slice(0, 80) || null,
       ultimo_erro: mensagem,
+      ciclo_tentativas: fimDoCiclo || !repetivel ? 0 : item.ciclo_tentativas,
       atualizado_em: agora.toISOString(),
     })
     .eq("id", item.id)
@@ -285,6 +309,20 @@ export async function falharItemRecuperacao(
     detalhes: { repetivel, proxima_tentativa_em: proxima },
     finalizado_em: agora.toISOString(),
   });
+  await db.from("fiscoai_xml_notificacoes").upsert(
+    {
+      user_id: item.user_id,
+      empresa_id: item.empresa_id,
+      empresa_cnpj: item.empresa_cnpj,
+      item_id: item.id,
+      fingerprint: `${item.id}:${entrada.codigo || "FALHA_PROVEDOR"}`,
+      tipo: "FALHA_RECUPERACAO",
+      severidade: repetivel ? "ATENCAO" : "CRITICA",
+      titulo: repetivel ? "Recuperação de XML adiada" : "XML exige nova tentativa",
+      mensagem: `NF-e ${item.chave_acesso}: ${mensagem}`.slice(0, 1000),
+    },
+    { onConflict: "user_id,fingerprint", ignoreDuplicates: true },
+  );
   await atualizarTotaisLote(db, item.lote_id);
   await db
     .from("fiscoai_empresa_integracoes")
