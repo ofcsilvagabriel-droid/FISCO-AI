@@ -4,6 +4,7 @@ import { baixarDocumentoFiscal, marcarDocumentosFiscais } from "@/modules/dfe/se
 import { importarXmlManualNoHub } from "@/modules/dfe/services/importacaoManual.functions";
 import { criarLoteRecuperacaoXml, listarCentralXml } from "@/modules/xml/services/recuperacaoXml.functions";
 import { parsearNFe } from "@/modules/xml/services/parsearNFe";
+import { interpretarPlanilhaSefazCsv } from "@/modules/xml/domain/planilhaSefaz";
 
 const digitos = valor => String(valor || "").replace(/\D/g, "");
 const erroTexto = erro => erro?.message || String(erro || "Falha inesperada.");
@@ -30,6 +31,7 @@ export default function PainelDfe({ S, C, onImport, onNavigate, empresaInicial =
   const [ocupado, setOcupado] = useState("");
   const [erro, setErro] = useState("");
   const [aviso, setAviso] = useState("");
+  const [planilhaPendente, setPlanilhaPendente] = useState(null);
   const processamentoAutomatico = useRef(new Set());
   const empresa = useMemo(() => empresas.find(item => item.cnpj === selecionada) || null, [empresas, selecionada]);
   const chaves = useMemo(() => extrairChaves(chavesTexto), [chavesTexto]);
@@ -57,9 +59,31 @@ export default function PainelDfe({ S, C, onImport, onNavigate, empresaInicial =
     if (!selecionada || !chaves.length) return;
     setOcupado("fila"); setErro(""); setAviso("");
     try {
-      const resultado = await criarLoteRecuperacaoXml({ data: { cnpj: selecionada, chaves, origem } });
+      const resultado = await criarLotes(chaves, origem);
       setChavesTexto(""); await atualizar();
       setAviso(`${resultado.enfileiradas} chave(s) adicionada(s) à nossa API${resultado.duplicadas ? `; ${resultado.duplicadas} já cadastrada(s)` : ""}.`);
+    } catch (e) { setErro(erroTexto(e)); }
+    finally { setOcupado(""); }
+  };
+
+  const criarLotes = async (lista, origem, empresaCnpj = selecionada) => {
+    let enfileiradas = 0;
+    let duplicadas = 0;
+    for (let inicio = 0; inicio < lista.length; inicio += 500) {
+      const resultado = await criarLoteRecuperacaoXml({ data: { cnpj: empresaCnpj, chaves: lista.slice(inicio, inicio + 500), origem } });
+      enfileiradas += resultado.enfileiradas;
+      duplicadas += resultado.duplicadas;
+    }
+    return { enfileiradas, duplicadas };
+  };
+
+  const confirmarPlanilha = async () => {
+    if (!planilhaPendente?.resultado?.chaves?.length || !selecionada) return;
+    setOcupado("planilha"); setErro(""); setAviso("");
+    try {
+      const resultado = await criarLotes(planilhaPendente.resultado.chaves, "ARQUIVO_CHAVES", planilhaPendente.empresaCnpj);
+      setPlanilhaPendente(null); await atualizar();
+      setAviso(`${resultado.enfileiradas} chave(s) da planilha da SEFAZ adicionada(s) à fila${resultado.duplicadas ? `; ${resultado.duplicadas} já cadastrada(s)` : ""}.`);
     } catch (e) { setErro(erroTexto(e)); }
     finally { setOcupado(""); }
   };
@@ -80,10 +104,15 @@ export default function PainelDfe({ S, C, onImport, onNavigate, empresaInicial =
         const status = detalhe?.status === "ok" ? analisado.nota.uf_origem === analisado.nota.uf_destino ? "interna" : "importada" : "falha";
         await marcarDocumentosFiscais({ data: { items: [{ id: persistido.documentoId, status, erro: detalhe?.motivo }] } });
         setAviso(persistido.duplicado ? "XML já existente; vínculo confirmado." : "XML validado, armazenado e processado.");
+      } else if (/\.csv$/i.test(arquivo.name)) {
+        const resultado = interpretarPlanilhaSefazCsv(texto);
+        if (!resultado.chaves.length) throw new Error("A planilha da SEFAZ não possui nenhuma chave de NF-e modelo 55 válida.");
+        setPlanilhaPendente({ nome: arquivo.name, resultado, empresaCnpj: selecionada, empresaNome: empresa?.razao_social || empresa?.nome_fantasia || selecionada });
+        setAviso("Planilha da SEFAZ analisada. Confira o resumo antes de adicionar as chaves à fila.");
       } else {
         const encontradas = extrairChaves(texto);
         if (!encontradas.length) throw new Error("Nenhuma chave de acesso de 44 dígitos foi encontrada no arquivo.");
-        const resultado = await criarLoteRecuperacaoXml({ data: { cnpj: selecionada, chaves: encontradas, origem: "ARQUIVO_CHAVES" } });
+        const resultado = await criarLotes(encontradas, "ARQUIVO_CHAVES");
         setAviso(`${resultado.enfileiradas} chave(s) adicionada(s) à nossa API.`);
       }
       await atualizar();
@@ -139,7 +168,7 @@ export default function PainelDfe({ S, C, onImport, onNavigate, empresaInicial =
   return <div style={{ display: "grid", gap: 14 }}>
     <header style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
       <div><div style={{ ...S.cardTitle, fontSize: 18 }}>Central de documentos fiscais</div><div style={{ color: C.muted, fontSize: 12, marginTop: 4 }}>Nossa API recebe chaves e XMLs, valida os documentos e os vincula à empresa correta.</div></div>
-      <label style={{ ...S.btn("primary"), cursor: ocupado ? "wait" : "pointer" }}>{ocupado === "arquivo" ? "Processando…" : "Enviar XML ou lista de chaves"}<input type="file" accept=".xml,.txt,.csv,text/xml,application/xml,text/plain,text/csv" disabled={!!ocupado || !selecionada} onChange={receberArquivo} style={{ display: "none" }}/></label>
+      <label style={{ ...S.btn("primary"), cursor: ocupado ? "wait" : "pointer" }}>{ocupado === "arquivo" ? "Processando…" : "Enviar XML ou planilha SEFAZ"}<input type="file" accept=".xml,.txt,.csv,text/xml,application/xml,text/plain,text/csv" disabled={!!ocupado || !selecionada} onChange={receberArquivo} style={{ display: "none" }}/></label>
     </header>
     {erro && <div role="alert" style={S.alert("error")}>{erro}</div>}
     {aviso && <div role="status" style={S.alert("success")}>{aviso}</div>}
@@ -152,6 +181,22 @@ export default function PainelDfe({ S, C, onImport, onNavigate, empresaInicial =
       </div>
       {empresa ? <div style={{ color: C.muted, fontSize: 12 }}>Empresa ativa: <strong style={{ color: C.text }}>{empresa.razao_social}</strong></div> : <button onClick={() => onNavigate?.("empresas")} style={S.btn("primary")}>Cadastrar empresa</button>}
     </section>
+
+    {planilhaPendente && <section style={{ ...S.card, display: "grid", gap: 12, borderColor: `rgba(${C.blue},0.45)` }}>
+      <div style={S.cardTitle}>Conferir planilha da SEFAZ</div>
+      <div style={{ color: C.muted, fontSize: 12 }}>{planilhaPendente.nome} · as chaves serão vinculadas a <strong style={{ color: C.text }}>{planilhaPendente.empresaNome}</strong>.</div>
+      <div style={{ ...S.statsGrid, gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 8 }}>
+        {[
+          ["Linhas", planilhaPendente.resultado.linhas.length],
+          ["NF-e válidas", planilhaPendente.resultado.chaves.length],
+          ["Duplicadas", planilhaPendente.resultado.duplicadas.length],
+          ["Inválidas", planilhaPendente.resultado.invalidas.length],
+        ].map(([titulo, valor]) => <div key={titulo} style={{ ...S.card, padding: 12 }}><div style={{ color: C.muted, fontSize: 11 }}>{titulo}</div><strong style={{ fontSize: 20 }}>{valor}</strong></div>)}
+      </div>
+      <div style={{ color: C.muted, fontSize: 12 }}>Situações: {Object.entries(planilhaPendente.resultado.situacoes).map(([nome, total]) => `${nome}: ${total}`).join(" · ")}<br/>UF dos emitentes: {Object.entries(planilhaPendente.resultado.ufs).map(([nome, total]) => `${nome}: ${total}`).join(" · ")}</div>
+      {!!planilhaPendente.resultado.invalidas.length && <div style={S.alert("warn")}>Linhas com chave inválida: {planilhaPendente.resultado.invalidas.slice(0, 20).map(item => item.linha).join(", ")}{planilhaPendente.resultado.invalidas.length > 20 ? "…" : ""}. Elas não serão importadas.</div>}
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}><button onClick={() => setPlanilhaPendente(null)} disabled={!!ocupado} style={S.btn("ghost")}>Cancelar</button><button onClick={confirmarPlanilha} disabled={!!ocupado} style={S.btn("primary")}>{ocupado === "planilha" ? "Criando lotes…" : `Importar ${planilhaPendente.resultado.chaves.length} chave(s)`}</button></div>
+    </section>}
 
     {selecionada && <>
       <section style={{ ...S.statsGrid, gridTemplateColumns: "repeat(auto-fit,minmax(155px,1fr))", gap: 10 }}>{stats.map(([titulo, valor, texto, cor]) => <div key={titulo} style={{ ...S.card, minHeight: 100, padding: "14px 16px" }}><div style={{ color: C.muted, fontSize: 11, fontWeight: 600 }}>{titulo}</div><div style={{ color: `rgb(${cor})`, fontSize: 25, fontWeight: 700, marginTop: 7 }}>{Number(valor).toLocaleString("pt-BR")}</div><div style={{ color: C.muted, fontSize: 11, marginTop: 4 }}>{texto}</div></div>)}</section>
