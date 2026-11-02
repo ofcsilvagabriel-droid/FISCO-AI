@@ -11,8 +11,19 @@ const empresaInput = z.object({
   uf: z.string().regex(/^[A-Za-z]{2}$/).optional().nullable(),
   inscricao_estadual: z.string().trim().max(32).optional().nullable(),
   regime: z.enum(["SN", "LP", "LR", "MEI", "OUTRO"]).optional().nullable(),
+  situacao: z.enum(["ATIVA", "INATIVA", "SUSPENSA", "BAIXADA"]).default("ATIVA"),
+  tipo_estabelecimento: z.enum(["MATRIZ", "FILIAL"]).default("MATRIZ"),
+  cnae_principal: z.string().trim().max(16).optional().nullable(),
+  email: z.string().trim().email().max(240).optional().nullable().or(z.literal("")),
+  telefone: z.string().trim().max(32).optional().nullable(),
+  cep: z.string().trim().max(9).optional().nullable(),
+  municipio: z.string().trim().max(120).optional().nullable(),
+  bairro: z.string().trim().max(120).optional().nullable(),
+  logradouro: z.string().trim().max(240).optional().nullable(),
+  numero: z.string().trim().max(32).optional().nullable(),
+  complemento: z.string().trim().max(120).optional().nullable(),
   ativa: z.boolean().default(true),
-  busca_xml_automatica: z.boolean().default(true),
+  busca_xml_automatica: z.boolean().default(false),
 });
 const acessoInput = z.object({
   cnpj: CNPJ,
@@ -42,7 +53,7 @@ export const listarEmpresasFisco = createServerFn({ method: "GET" })
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const db = supabaseAdmin as any;
     const [{ data: empresas, error }, { data: certificados, error: certificadoErro }, { data: acessos, error: acessoErro }] = await Promise.all([
-      db.from("fiscoai_empresas").select("cnpj,razao_social,nome_fantasia,uf,inscricao_estadual,regime,ativa,busca_xml_automatica,criado_em,atualizado_em")
+      db.from("fiscoai_empresas").select("empresa_id,cnpj,razao_social,nome_fantasia,uf,inscricao_estadual,regime,situacao,tipo_estabelecimento,cnae_principal,email,telefone,cep,municipio,bairro,logradouro,numero,complemento,ativa,busca_xml_automatica,criado_em,atualizado_em")
         .eq("user_id", context.userId).order("razao_social"),
       db.from("fiscoai_certificados_dfe").select("cnpj,nome,titular,validade_inicio,validade_fim,fingerprint_sha256,atualizado_em")
         .eq("user_id", context.userId),
@@ -71,9 +82,19 @@ export const salvarEmpresaFisco = createServerFn({ method: "POST" })
       uf: data.uf?.toUpperCase() || null,
       nome_fantasia: data.nome_fantasia || null,
       inscricao_estadual: data.inscricao_estadual || null,
+      cnae_principal: data.cnae_principal || null,
+      email: data.email || null,
+      telefone: data.telefone || null,
+      cep: data.cep || null,
+      municipio: data.municipio || null,
+      bairro: data.bairro || null,
+      logradouro: data.logradouro || null,
+      numero: data.numero || null,
+      complemento: data.complemento || null,
+      busca_xml_automatica: false,
       atualizado_em: new Date().toISOString(),
     }, { onConflict: "user_id,cnpj" })
-      .select("cnpj,razao_social,nome_fantasia,uf,inscricao_estadual,regime,ativa,busca_xml_automatica,criado_em,atualizado_em")
+      .select("empresa_id,cnpj,razao_social,nome_fantasia,uf,inscricao_estadual,regime,situacao,tipo_estabelecimento,cnae_principal,email,telefone,cep,municipio,bairro,logradouro,numero,complemento,ativa,busca_xml_automatica,criado_em,atualizado_em")
       .single();
     if (error) throw new Error(error.message);
     return empresa;
@@ -99,6 +120,7 @@ export const importarEmpresasFisco = createServerFn({ method: "POST" })
         uf: empresa.uf?.toUpperCase() || null,
         nome_fantasia: empresa.nome_fantasia || null,
         inscricao_estadual: empresa.inscricao_estadual || null,
+        busca_xml_automatica: false,
         atualizado_em: agora,
       }, { onConflict: "user_id,cnpj" });
 

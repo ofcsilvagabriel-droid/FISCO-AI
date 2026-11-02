@@ -1,333 +1,148 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { parsearNFe } from "@/modules/xml/services/parsearNFe";
-import { baixarDocumentoDfe, consultarDfe, listarDocumentosDfe, marcarDocumentosDfe } from "@/modules/dfe/services/distribuicaoDfe.functions";
-import { existeLoteDfePendente, INTERVALO_MINIMO_BUSCA_DFE_MS } from "@/modules/dfe/services/distribuicaoDfe.shared";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { listarEmpresasFisco } from "@/modules/empresas/empresas.functions";
+import { baixarDocumentoDfe, marcarDocumentosDfe } from "@/modules/dfe/services/distribuicaoDfe.functions";
+import { importarXmlManualNoHub } from "@/modules/dfe/services/importacaoManual.functions";
+import { criarLoteRecuperacaoXml, listarCentralXml } from "@/modules/xml/services/recuperacaoXml.functions";
+import { parsearNFe } from "@/modules/xml/services/parsearNFe";
 
-const dataBR = valor => valor ? new Date(valor).toLocaleDateString("pt-BR") : "—";
-const mensagem = erro => erro?.message || String(erro || "Falha inesperada.");
-const limparCnpj = valor => String(valor || "").replace(/[^0-9a-z]/gi, "").toUpperCase();
-const baseCnpj = valor => limparCnpj(valor).slice(0, 8);
-const PAGE_SIZE = 100;
-const pastaDataEmissao = valor => {
-  const match = String(valor || "").match(/^(\d{4})-(0[1-9]|1[0-2])/);
-  return match ? { ano: match[1], mes: match[2], chave: `${match[1]}-${match[2]}` } : { ano: "Sem competência", mes: "Sem competência", chave: "sem-competencia" };
-};
-const rotuloCompetencia = chave => chave === "sem-competencia" ? "Sem competência" : `${chave.slice(5, 7)}/${chave.slice(0, 4)}`;
-const competenciaAtual = () => {
-  const hoje = new Date();
-  return `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, "0")}`;
-};
+const digitos = valor => String(valor || "").replace(/\D/g, "");
+const erroTexto = erro => erro?.message || String(erro || "Falha inesperada.");
+const competenciaAtual = () => new Date().toISOString().slice(0, 7);
+const formatarCnpj = valor => digitos(valor).replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5");
+const extrairChaves = texto => [...new Set((String(texto || "").match(/\d{44}/g) || []))];
+const dinheiro = valor => Number(valor || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+const dataHora = valor => valor ? new Date(valor).toLocaleString("pt-BR") : "—";
 
-function notaEntradaElegivel(nota, cnpjCertificado) {
-  const emitente = limparCnpj(nota?.emitente_cnpj);
-  const destinatario = limparCnpj(nota?.destinatario_cnpj);
-  const origem = String(nota?.uf_origem || "").toUpperCase();
-  const destino = String(nota?.uf_destino || "").toUpperCase();
-  return String(nota?.modelo || "") === "55"
-    && baseCnpj(destinatario) !== ""
-    && baseCnpj(destinatario) === baseCnpj(cnpjCertificado)
-    && emitente !== destinatario
-    && /^[A-Z]{2}$/.test(origem)
-    && /^[A-Z]{2}$/.test(destino);
-}
+const STATUS = {
+  NA_FILA: "Na fila", CONSULTANDO: "Consultando", BAIXADA: "XML baixado",
+  VALIDANDO_XML: "Validando XML", ARMAZENADA: "Armazenada", IMPORTADA: "Importada",
+  DUPLICADA: "Já existente", CHAVE_INVALIDA: "Chave inválida", NAO_ENCONTRADA: "Não encontrada",
+  XML_INCOMPLETO: "XML incompleto", PROVEDOR_INDISPONIVEL: "Provedor indisponível",
+  BLOQUEADA: "Consulta bloqueada", FALHA_DEFINITIVA: "Falha definitiva",
+};
 
 export default function PainelDfe({ S, C, onImport, onNavigate }) {
   const [empresas, setEmpresas] = useState([]);
+  const [selecionada, setSelecionada] = useState("");
   const [competencia, setCompetencia] = useState(competenciaAtual);
-  const [selecionado, setSelecionado] = useState("");
-  const [documentos, setDocumentos] = useState([]);
-  const [indicadores, setIndicadores] = useState({ total: 0, importadas: 0, internas: 0, pendentes: 0, falhas: 0, semCompetencia: 0, resumos: 0, falhasCiencia: 0, monitoradas: 0, ultimaBusca: null });
-  const [pagina, setPagina] = useState(0);
-  const [temMais, setTemMais] = useState(false);
-  const [cursor, setCursor] = useState(null);
+  const [chavesTexto, setChavesTexto] = useState("");
+  const [dados, setDados] = useState({ lotes: [], itens: [], documentos: [], indicadores: {} });
   const [ocupado, setOcupado] = useState("");
-  const [buscando, setBuscando] = useState(false);
-  const [horaAtual, setHoraAtual] = useState(Date.now());
-  const [aviso, setAviso] = useState("");
   const [erro, setErro] = useState("");
-  const onImportRef = useRef(onImport);
-  const filasAtivas = useRef(new Set());
+  const [aviso, setAviso] = useState("");
+  const empresa = useMemo(() => empresas.find(item => item.cnpj === selecionada) || null, [empresas, selecionada]);
+  const chaves = useMemo(() => extrairChaves(chavesTexto), [chavesTexto]);
 
-  useEffect(() => { onImportRef.current = onImport; }, [onImport]);
-  useEffect(() => {
-    const timer = window.setInterval(() => setHoraAtual(Date.now()), 30000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  const atualizarEmpresas = useCallback(async () => {
+  const carregar = useCallback(async () => {
     const lista = await listarEmpresasFisco();
     setEmpresas(lista);
-    setSelecionado(atual => atual || lista.find(empresa => empresa.ativa && empresa.certificado?.validade_fim)?.cnpj || "");
-    return lista;
+    setSelecionada(atual => atual || lista[0]?.cnpj || "");
   }, []);
+  const atualizar = useCallback(async () => {
+    if (!selecionada) return setDados({ lotes: [], itens: [], documentos: [], indicadores: {} });
+    setDados(await listarCentralXml({ data: { cnpj: selecionada, competencia } }));
+  }, [selecionada, competencia]);
 
-  const atualizarDocumentos = useCallback(async (alvo, paginaAlvo = 0, acrescentar = false) => {
-    if (!alvo) { setDocumentos([]); setCursor(null); setTemMais(false); setIndicadores({ total: 0, importadas: 0, internas: 0, pendentes: 0, falhas: 0, semCompetencia: 0, resumos: 0, falhasCiencia: 0, monitoradas: 0, ultimaBusca: null }); return { documentos: [], pendentes: [], cursor: null, temMais: false }; }
-    const resultado = await listarDocumentosDfe({ data: { cnpj: alvo, competencia, offset: paginaAlvo * PAGE_SIZE } });
-    setDocumentos(atual => {
-      const base = acrescentar ? atual : [];
-      const porId = new Map([...base, ...(resultado.documentos || [])].map(documento => [documento.id, documento]));
-      return [...porId.values()];
-    });
-    setCursor(resultado.cursor);
-    setTemMais(!!resultado.temMais);
-    setIndicadores(resultado.indicadores || {});
-    return resultado;
-  }, [competencia]);
-
-  const processarPendentes = useCallback(async (alvo, exibirProgresso = false) => {
-    if (!alvo || filasAtivas.current.has(alvo)) return { importadas: 0, internas: 0, descartadas: 0, falhas: 0 };
-    filasAtivas.current.add(alvo);
-    const totais = { importadas: 0, internas: 0, descartadas: 0, falhas: 0 };
-    try {
-      while (true) {
-        const resultado = await atualizarDocumentos(alvo);
-        const lote = resultado.pendentes || [];
-        if (!lote.length) break;
-        const paraImportar = [];
-        const atualizacoes = [];
-        for (const documento of lote) {
-          try {
-            const baixado = await baixarDocumentoDfe({ data: { id: documento.id } });
-            const parsed = parsearNFe(baixado.xml);
-            if (parsed.erro || !parsed.nota || !parsed.produtos.length) {
-              atualizacoes.push({ id: documento.id, status: "falha", erro: parsed.erro || "XML sem itens de NF-e." });
-              totais.falhas++;
-            } else if (!parsed.nota.data_emissao) {
-              atualizacoes.push({ id: documento.id, status: "falha", erro: "NF-e sem data de emissão; não foi incluída em competência incorreta." });
-              totais.falhas++;
-            } else if (!notaEntradaElegivel(parsed.nota, alvo)) {
-              atualizacoes.push({ id: documento.id, status: "descartada" });
-              totais.descartadas++;
-            } else if (parsed.nota.uf_origem === parsed.nota.uf_destino) {
-              atualizacoes.push({ id: documento.id, status: "interna" });
-              totais.internas++;
-            } else {
-              paraImportar.push({ documento, xml: baixado.xml, nomeArquivo: `${documento.id}.xml` });
-            }
-          } catch (e) {
-            atualizacoes.push({ id: documento.id, status: "falha", erro: mensagem(e).slice(0, 500) });
-            totais.falhas++;
-          }
-        }
-        if (paraImportar.length) {
-          try {
-            const resumo = await onImportRef.current(paraImportar.map(item => ({
-              name: item.nomeArquivo,
-              text: async () => item.xml,
-              fiscoaiHubDocumento: true,
-            })));
-            const detalhePorArquivo = new Map((resumo?.detalhes || []).map(item => [item.arquivo, item]));
-            for (const item of paraImportar) {
-              const detalhe = detalhePorArquivo.get(item.nomeArquivo);
-              if (detalhe?.status === "ok") {
-                atualizacoes.push({ id: item.documento.id, status: "importada" });
-                totais.importadas++;
-              } else {
-                const motivo = detalhe?.motivo || "Não foi possível salvar a NF-e no Arquivo Fiscal e no histórico.";
-                atualizacoes.push({ id: item.documento.id, status: "falha", erro: motivo.slice(0, 500) });
-                totais.falhas++;
-              }
-            }
-          } catch (e) {
-            for (const item of paraImportar) {
-              atualizacoes.push({ id: item.documento.id, status: "falha", erro: mensagem(e).slice(0, 500) });
-              totais.falhas++;
-            }
-          }
-        }
-        if (atualizacoes.length) await marcarDocumentosDfe({ data: { items: atualizacoes } });
-        if (exibirProgresso) {
-          setAviso(`Processadas ${totais.importadas} NF-e até agora${totais.falhas ? ` · ${totais.falhas} com falha` : ""}.`);
-        }
-      }
-      await atualizarDocumentos(alvo);
-      return totais;
-    } finally {
-      filasAtivas.current.delete(alvo);
-    }
-  }, [atualizarDocumentos]);
-
-  useEffect(() => { atualizarEmpresas().catch(e => setErro(mensagem(e))); }, [atualizarEmpresas]);
+  useEffect(() => { carregar().catch(e => setErro(erroTexto(e))); }, [carregar]);
+  useEffect(() => { atualizar().catch(e => setErro(erroTexto(e))); }, [atualizar]);
   useEffect(() => {
-    if (!selecionado) { atualizarDocumentos(""); return; }
-    let ativo = true;
-    setErro("");
-    setPagina(0);
-    (async () => {
-      const resultado = await atualizarDocumentos(selecionado, 0);
-      await processarPendentes(selecionado);
-      const empresa = empresas.find(item => item.cnpj === selecionado);
-      const lotePendente = existeLoteDfePendente(resultado.cursor);
-      const proximaBuscaMs = Math.max(
-        resultado.cursor?.bloqueado_ate ? new Date(resultado.cursor.bloqueado_ate).getTime() : 0,
-        !lotePendente && resultado.cursor?.consultado_em ? new Date(resultado.cursor.consultado_em).getTime() + INTERVALO_MINIMO_BUSCA_DFE_MS : 0,
-      );
-      const aguardando = proximaBuscaMs > Date.now();
-      if (empresa?.busca_xml_automatica && !aguardando) {
-        setAviso("Buscando novos XMLs automaticamente para esta empresa…");
-        const busca = await consultarDfe({ data: { cnpj: selecionado } });
-        const totais = await processarPendentes(selecionado, true);
-        await atualizarDocumentos(selecionado, 0);
-        if (ativo) setAviso(`Busca automática concluída. ${totais.importadas} XML(s) completo(s) importado(s) para cálculo; ${totais.internas} XML(s) completo(s) da mesma UF arquivado(s).`);
-      } else if (empresa?.busca_xml_automatica && aguardando) {
-        setAviso(`Próxima busca automática após ${new Date(proximaBuscaMs).toLocaleString("pt-BR")}.`);
-      }
-    })().catch(e => { if (ativo) setErro(mensagem(e)); });
-    return () => { ativo = false; };
-  }, [selecionado, competencia, empresas, atualizarDocumentos, processarPendentes]);
-
-  useEffect(() => {
-    if (!selecionado) return;
-    const timer = window.setInterval(async () => {
-      try {
-        await processarPendentes(selecionado);
-        await atualizarDocumentos(selecionado);
-      } catch (e) { setErro(mensagem(e)); }
-    }, 60000);
+    if (!selecionada) return undefined;
+    const timer = window.setInterval(() => atualizar().catch(() => {}), 60000);
     return () => window.clearInterval(timer);
-  }, [selecionado, processarPendentes, atualizarDocumentos]);
+  }, [selecionada, atualizar]);
 
-  const documentosPorPasta = useMemo(() => {
-    const anos = new Map();
-    const ordenados = [...documentos].sort((a, b) => String(b.data_emissao || "").localeCompare(String(a.data_emissao || "")) || String(b.nsu).localeCompare(String(a.nsu)));
-    ordenados.forEach(documento => {
-      const pasta = pastaDataEmissao(documento.data_emissao);
-      if (!anos.has(pasta.ano)) anos.set(pasta.ano, new Map());
-      const meses = anos.get(pasta.ano);
-      if (!meses.has(pasta.chave)) meses.set(pasta.chave, []);
-      meses.get(pasta.chave).push(documento);
-    });
-    return [...anos.entries()].map(([ano, meses]) => [ano, [...meses.entries()]]);
-  }, [documentos]);
-
-  const tentarNovamente = async documento => {
-    setOcupado(documento.id); setErro("");
+  const enfileirar = async origem => {
+    if (!selecionada || !chaves.length) return;
+    setOcupado("fila"); setErro(""); setAviso("");
     try {
-      await marcarDocumentosDfe({ data: { items: [{ id: documento.id, status: "pendente" }] } });
-      await processarPendentes(selecionado, true);
-      await atualizarDocumentos(selecionado);
-    } catch (e) { setErro(mensagem(e)); }
+      const resultado = await criarLoteRecuperacaoXml({ data: { cnpj: selecionada, chaves, origem } });
+      setChavesTexto(""); await atualizar();
+      setAviso(`${resultado.enfileiradas} chave(s) adicionada(s) à nossa API${resultado.duplicadas ? `; ${resultado.duplicadas} já cadastrada(s)` : ""}.`);
+    } catch (e) { setErro(erroTexto(e)); }
     finally { setOcupado(""); }
   };
 
-  const obterXml = async documento => {
-    setOcupado(documento.id); setErro(""); setAviso("");
+  const receberArquivo = async evento => {
+    const arquivo = evento.target.files?.[0];
+    if (!arquivo || !selecionada) return;
+    setOcupado("arquivo"); setErro(""); setAviso("");
+    try {
+      const texto = await arquivo.text();
+      if (/\.xml$/i.test(arquivo.name) || /^\s*</.test(texto)) {
+        const analisado = parsearNFe(texto);
+        if (analisado.erro || !analisado.nota) throw new Error(analisado.erro || "XML de NF-e inválido.");
+        if (digitos(analisado.nota.destinatario_cnpj) !== selecionada) throw new Error("O destinatário do XML não corresponde à empresa selecionada.");
+        const persistido = await importarXmlManualNoHub({ data: { empresaCnpj: selecionada, xml: texto } });
+        const resumo = await onImport?.([{ name: arquivo.name, text: async () => texto, fiscoaiHubDocumento: true }]);
+        const detalhe = resumo?.detalhes?.[0];
+        const status = detalhe?.status === "ok" ? analisado.nota.uf_origem === analisado.nota.uf_destino ? "interna" : "importada" : "falha";
+        await marcarDocumentosDfe({ data: { items: [{ id: persistido.documentoId, status, erro: detalhe?.motivo }] } });
+        setAviso(persistido.duplicado ? "XML já existente; vínculo confirmado." : "XML validado, armazenado e processado.");
+      } else {
+        const encontradas = extrairChaves(texto);
+        if (!encontradas.length) throw new Error("Nenhuma chave de acesso de 44 dígitos foi encontrada no arquivo.");
+        const resultado = await criarLoteRecuperacaoXml({ data: { cnpj: selecionada, chaves: encontradas, origem: "ARQUIVO_CHAVES" } });
+        setAviso(`${resultado.enfileiradas} chave(s) adicionada(s) à nossa API.`);
+      }
+      await atualizar();
+    } catch (e) { setErro(erroTexto(e)); }
+    finally { setOcupado(""); evento.target.value = ""; }
+  };
+
+  const baixar = async documento => {
+    setOcupado(documento.id); setErro("");
     try {
       const resultado = await baixarDocumentoDfe({ data: { id: documento.id } });
       const url = URL.createObjectURL(new Blob([resultado.xml], { type: "application/xml" }));
       const link = document.createElement("a");
-      link.href = url; link.download = `${documento.chave_acesso || documento.numero_nfe || documento.nsu}.xml`; link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (e) { setErro(mensagem(e)); }
+      link.href = url; link.download = `${documento.chave_acesso || documento.numero_nfe}.xml`; link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) { setErro(erroTexto(e)); }
     finally { setOcupado(""); }
   };
 
-  const buscarXmls = async () => {
-    if (!selecionado || buscando) return;
-    setBuscando(true); setErro(""); setAviso("Consultando novos XMLs na SEFAZ…");
-    try {
-      const busca = await consultarDfe({ data: { cnpj: selecionado, manual: true } });
-      const totais = await processarPendentes(selecionado, true);
-      await atualizarDocumentos(selecionado, 0);
-      setAviso(`Busca concluída (${busca.status}). ${totais.importadas + totais.internas} XML(s) completo(s) processado(s); ${totais.importadas} NF-e importada(s) para cálculo e ${totais.internas} arquivada(s) da mesma UF.`);
-    } catch (e) {
-      setAviso(""); setErro(mensagem(e));
-      await atualizarDocumentos(selecionado, 0).catch(() => {});
-    } finally { setBuscando(false); }
-  };
-
-  const bloqueadoAte = cursor?.bloqueado_ate ? new Date(cursor.bloqueado_ate).getTime() : 0;
-  const lotePendente = existeLoteDfePendente(cursor);
-  const intervaloAte = !lotePendente && cursor?.consultado_em ? new Date(cursor.consultado_em).getTime() + INTERVALO_MINIMO_BUSCA_DFE_MS : 0;
-  const proximaBuscaAte = Math.max(bloqueadoAte, intervaloAte);
-  const aguardarSefaz = proximaBuscaAte > horaAtual;
-  const empresaSelecionada = empresas.find(empresa => empresa.cnpj === selecionado);
-  const monitoramentoAtivo = empresaSelecionada?.ativa && empresaSelecionada?.busca_xml_automatica && empresaSelecionada?.certificado && new Date(empresaSelecionada.certificado.validade_fim).getTime() > horaAtual;
-
-  const periodoFmt = data => data ? new Date(data).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "Sem busca registrada";
   const stats = [
-    ["XMLs completos", indicadores.total, "NF-e completas disponíveis", C.blue],
-    ["Importadas para cálculo", indicadores.importadas, "Entradas de outras UFs", C.green],
-    ["Da mesma UF", indicadores.internas, "Guardadas sem cálculo de ICMS", C.blue],
-    ["Aguardando processamento", indicadores.pendentes, "Serão processadas ao abrir o FiscoAI", C.yellow],
-    ["XMLs em recuperação", indicadores.resumos, indicadores.falhasCiencia ? `${indicadores.falhasCiencia} tentativa(s) de recuperação com falha` : "Aguardando XML completo da SEFAZ", C.yellow],
-    ["Com falha", indicadores.falhas, "Exigem nova tentativa", C.yellow],
-    ["Sem competência", indicadores.semCompetencia, "Metadados recuperados automaticamente quando possível", C.yellow],
-    ["Empresas monitoradas", indicadores.monitoradas, "Com certificado válido", C.green],
-    ["Última busca", periodoFmt(indicadores.ultimaBusca), cursor?.ultimo_status || "Busca automática na nuvem", C.blue],
+    ["Na fila", dados.indicadores.naFila || 0, "Aguardando o worker da API", C.yellow],
+    ["Recuperadas", dados.indicadores.recuperadas || 0, "XMLs obtidos por chave", C.green],
+    ["XMLs da competência", dados.indicadores.documentos || 0, "Documentos completos armazenados", C.blue],
+    ["Importadas para cálculo", dados.indicadores.importadas || 0, "Entradas de outras UFs", C.green],
+    ["Mesma UF", dados.indicadores.internas || 0, "Arquivadas sem cálculo interestadual", C.blue],
+    ["Com falha", dados.indicadores.falhas || 0, "Precisam de revisão", C.yellow],
   ];
 
   return <div style={{ display: "grid", gap: 14 }}>
+    <header style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+      <div><div style={{ ...S.cardTitle, fontSize: 18 }}>Central de documentos fiscais</div><div style={{ color: C.muted, fontSize: 12, marginTop: 4 }}>Nossa API recebe chaves e XMLs, valida os documentos e os vincula à empresa correta.</div></div>
+      <label style={{ ...S.btn("primary"), cursor: ocupado ? "wait" : "pointer" }}>{ocupado === "arquivo" ? "Processando…" : "Enviar XML ou lista de chaves"}<input type="file" accept=".xml,.txt,.csv,text/xml,application/xml,text/plain,text/csv" disabled={!!ocupado || !selecionada} onChange={receberArquivo} style={{ display: "none" }}/></label>
+    </header>
     {erro && <div role="alert" style={S.alert("error")}>{erro}</div>}
     {aviso && <div role="status" style={S.alert("success")}>{aviso}</div>}
+    <div role="status" style={S.alert("warn")}><strong>Transição da API:</strong> a consulta NSU foi desativada. A fila própria já está ativa; o worker do Consulta DANFE será habilitado após o teste autorizado do provedor.</div>
 
-    <div style={{ ...S.card, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 12, alignItems: "end" }}>
-      <div style={{ gridColumn: "1 / -1" }}>
-        <div style={S.cardTitle}>Documentos Fiscais</div>
-        <p style={{ color: C.muted, fontSize: 12, margin: "4px 0 0" }}>A busca roda automaticamente na nuvem, mesmo com seu computador desligado. XMLs completos de entrada das duas UFs ficam guardados; só notas de outra UF são importadas para cálculo de ICMS.</p>
+    <section style={{ ...S.card, display: "grid", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 10 }}>
+        <label style={{ fontSize: 12 }}>Empresa<select value={selecionada} onChange={e => setSelecionada(e.target.value)} style={{ ...S.inp, width: "100%" }}><option value="">Selecione</option>{empresas.map(item => <option key={item.cnpj} value={item.cnpj}>{item.nome_fantasia || item.razao_social} — {formatarCnpj(item.cnpj)}</option>)}</select></label>
+        <label style={{ fontSize: 12 }}>Competência dos XMLs<input type="month" value={competencia} onChange={e => e.target.value && setCompetencia(e.target.value)} style={{ ...S.inp, width: "100%" }}/></label>
       </div>
-      <label style={{ fontSize: 12 }}>Empresa
-        <select value={selecionado} onChange={e => setSelecionado(e.target.value)} style={{ ...S.inp, width: "100%" }} aria-label="Filtrar XMLs por empresa">
-          <option value="">Selecione uma empresa</option>
-          {empresas.filter(empresa => empresa.certificado).map(empresa => <option key={empresa.cnpj} value={empresa.cnpj}>{empresa.nome_fantasia || empresa.razao_social} — {empresa.cnpj}</option>)}
-        </select>
-      </label>
-      <label style={{ fontSize: 12 }}>Competência de emissão
-        <input type="month" value={competencia} onChange={e => { if (!e.target.value) return; setCompetencia(e.target.value); setPagina(0); setDocumentos([]); }} style={{ ...S.inp, width: "100%" }} />
-      </label>
-      <div role="status" style={{ color: `rgb(${aguardarSefaz ? C.yellow : monitoramentoAtivo ? C.green : C.yellow})`, fontSize: 12, fontWeight: 700, padding: "10px 0" }}>
-        {bloqueadoAte > horaAtual ? `Pausa da SEFAZ até ${new Date(bloqueadoAte).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}. O botão pode ser acionado, mas a consulta só será enviada após a pausa.` : lotePendente && monitoramentoAtivo ? "● Lotes pendentes da SEFAZ · a busca continuará em sequência" : aguardarSefaz ? `Intervalo mínimo da SEFAZ até ${new Date(proximaBuscaAte).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}. Buscas automáticas às 03:00 e às 13:00.` : monitoramentoAtivo ? "● Monitoramento automático ativo · buscas diárias às 03:00 e às 13:00 (horário da Bahia)" : "Busca pausada: confira a empresa e a validade do certificado."}
-      </div>
-      <button type="button" onClick={buscarXmls} disabled={!selecionado || !empresaSelecionada?.certificado || new Date(empresaSelecionada.certificado.validade_fim).getTime() <= horaAtual || !empresaSelecionada?.ativa || buscando} style={S.btn("primary")}>
-        {buscando ? "Buscando XMLs…" : "Buscar XMLs agora"}
-      </button>
-      {!empresas.some(empresa => empresa.certificado) && <button type="button" onClick={() => onNavigate?.("empresas")} style={S.btn("primary")}>Cadastrar empresa e certificado</button>}
-    </div>
+      {empresa ? <div style={{ color: C.muted, fontSize: 12 }}>Empresa ativa: <strong style={{ color: C.text }}>{empresa.razao_social}</strong></div> : <button onClick={() => onNavigate?.("empresas")} style={S.btn("primary")}>Cadastrar empresa</button>}
+    </section>
 
-    {selecionado && <div style={{ ...S.statsGrid, gridTemplateColumns: "repeat(auto-fit,minmax(155px,1fr))", gap: 10 }}>
-      {stats.map(([label, value, sub, cor]) => <div key={label} style={{ ...S.card, minHeight: 102, padding: "13px 15px" }}>
-        <div style={{ color: C.muted, fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".04em" }}>{label}</div>
-        <div style={{ color: `rgb(${cor})`, fontSize: label === "Última busca" ? 14 : 23, fontWeight: 800, marginTop: 7, overflowWrap: "anywhere" }}>{label === "Última busca" ? value : Number(value || 0).toLocaleString("pt-BR")}</div>
-        <div style={{ color: C.muted, fontSize: 10, marginTop: 4 }}>{sub}</div>
-      </div>)}
-    </div>}
+    {selecionada && <>
+      <section style={{ ...S.statsGrid, gridTemplateColumns: "repeat(auto-fit,minmax(155px,1fr))", gap: 10 }}>{stats.map(([titulo, valor, texto, cor]) => <div key={titulo} style={{ ...S.card, minHeight: 100, padding: "14px 16px" }}><div style={{ color: C.muted, fontSize: 11, fontWeight: 600 }}>{titulo}</div><div style={{ color: `rgb(${cor})`, fontSize: 25, fontWeight: 700, marginTop: 7 }}>{Number(valor).toLocaleString("pt-BR")}</div><div style={{ color: C.muted, fontSize: 11, marginTop: 4 }}>{texto}</div></div>)}</section>
 
-    <div style={S.card}>
-      <div style={S.cardTitle}>Notas da competência · {rotuloCompetencia(competencia)}</div>
-      {!selecionado ? <div style={{ color: C.muted }}>Selecione uma empresa com certificado cadastrado.</div> : !documentos.length ? <div style={{ color: C.muted }}>Nenhum XML completo localizado nesta competência. A busca cobre os documentos ainda disponíveis na distribuição da SEFAZ.</div> : documentosPorPasta.map(([ano, meses]) => <section key={ano} style={{ border: `1px solid ${C.border}`, borderRadius: 10, padding: "8px 12px", marginBottom: 10 }}>
-        <div style={{ fontSize: 14, fontWeight: 800, color: C.text, padding: "5px 0 9px" }}>📁 {ano}</div>
-        {meses.map(([mes, itens]) => <div key={mes} style={{ borderTop: `1px solid ${C.border}`, paddingTop: 7, marginTop: 5 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: C.muted, padding: "2px 0 4px" }}>📂 {rotuloCompetencia(mes)} <span style={{ fontWeight: 400 }}>({itens.length})</span></div>
-          {itens.map(doc => {
-            const importada = doc.processamento_status === "importada";
-            const interna = doc.processamento_status === "interna" || (doc.uf_origem && doc.uf_origem === doc.uf_destino);
-            const falhou = doc.processamento_status === "falha";
-            const resumo = String(doc.schema_xml || "").startsWith("resNFe");
-            const cienciaFalhou = doc.processamento_status === "ciencia_erro";
-            const cienciaPendente = doc.processamento_status === "ciencia_pendente";
-            const cienciaEnviada = doc.processamento_status === "ciencia_enviada";
-            const identificacao = doc.numero_nfe ? `NF-e ${doc.numero_nfe}${doc.serie_nfe ? ` · Série ${doc.serie_nfe}` : ""}` : resumo ? `Resumo da NF-e · ${doc.chave_acesso || `NSU ${doc.nsu}`}` : `NF-e · NSU ${doc.nsu}`;
-            const status = importada ? "Importada para cálculo" : interna ? "XML guardado · mesma UF" : falhou ? "Precisa de nova tentativa" : cienciaFalhou ? "Ciência será tentada novamente" : cienciaPendente ? "Registrando Ciência da Emissão" : cienciaEnviada ? "Ciência enviada · aguardando XML completo" : doc.processamento_status === "descartada" ? "Não elegível para cálculo" : "Aguardando processamento";
-            return <div key={doc.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "9px 0", borderBottom: `1px solid ${C.border}` }}>
-              <div style={{ minWidth: 220, flex: 1 }}>
-                <strong>{identificacao}</strong>{doc.emitente_nome ? ` · ${doc.emitente_nome}` : ""}
-                <div style={{ fontSize: 11, color: C.muted }}>{doc.uf_origem && doc.uf_destino ? `${doc.uf_origem} → ${doc.uf_destino} · ` : ""}{dataBR(doc.data_emissao)}{doc.valor_total_xml ? ` · R$ ${Number(doc.valor_total_xml).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}` : ""}</div>
-                {falhou && <div style={{ fontSize: 11, color: "#fca5a5" }}>{doc.processamento_erro || "Falha ao processar."}</div>}
-                {cienciaFalhou && <div style={{ fontSize: 11, color: "#fca5a5" }}>{doc.processamento_erro || "A Ciência da Emissão será tentada novamente automaticamente."}</div>}
-                {cienciaEnviada && doc.ciencia_protocolo && <div style={{ fontSize: 11, color: C.muted }}>Protocolo da Ciência: {doc.ciencia_protocolo}</div>}
-              </div>
-              <div role="status" style={{ color: importada || interna ? `rgb(${C.green})` : falhou || cienciaFalhou ? "#fca5a5" : `rgb(${C.yellow})`, fontWeight: 700, fontSize: 12 }}>{status}</div>
-              <div style={{ display: "flex", gap: 6 }}>
-                {falhou && <button disabled={!!ocupado} onClick={() => tentarNovamente(doc)} style={S.btn("ghost")}>Tentar novamente</button>}
-                {!resumo && <button disabled={!!ocupado} onClick={() => obterXml(doc)} style={S.btn("ghost")}>Baixar XML</button>}
-              </div>
-            </div>;
-          })}
-        </div>)}
-      </section>)}
-      {temMais && <button disabled={!!ocupado} onClick={async () => { const proxima = pagina + 1; setPagina(proxima); try { await atualizarDocumentos(selecionado, proxima, true); } catch (e) { setErro(mensagem(e)); } }} style={{ ...S.btn("ghost"), width: "100%", justifyContent: "center" }}>Carregar XMLs anteriores</button>}
-    </div>
+      <section style={{ ...S.card, display: "grid", gap: 10 }}>
+        <div style={S.cardTitle}>Recuperar XML por chave</div><div style={{ color: C.muted, fontSize: 12 }}>Cole uma ou várias chaves. O sistema elimina duplicidades e cria um lote rastreável.</div>
+        <textarea value={chavesTexto} onChange={e => setChavesTexto(e.target.value)} rows={5} placeholder="Cole as chaves de acesso de 44 dígitos, uma por linha" style={{ ...S.inp, width: "100%", resize: "vertical" }}/>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}><span style={{ color: C.muted, fontSize: 12 }}>{chaves.length} chave(s) reconhecida(s)</span><button onClick={() => enfileirar("CHAVES_COLADAS")} disabled={!chaves.length || ocupado === "fila"} style={S.btn("primary")}>{ocupado === "fila" ? "Criando lote…" : "Adicionar à fila"}</button></div>
+      </section>
+
+      <section style={S.card}><div style={S.cardTitle}>Fila de recuperação</div>
+        {!dados.itens.length ? <div style={{ color: C.muted, padding: "22px 0" }}>Nenhuma chave cadastrada para esta empresa.</div> : <div style={{ overflowX: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}><thead><tr style={{ color: C.muted, textAlign: "left" }}><th style={{ padding: "10px 8px" }}>Chave</th><th>Status</th><th>Tentativas</th><th>Atualização</th></tr></thead><tbody>{dados.itens.map(item => <tr key={item.id} style={{ borderTop: `1px solid ${C.border}` }}><td style={{ padding: "11px 8px", fontFamily: "monospace" }}>{item.chave_acesso}</td><td><span style={{ color: ["ARMAZENADA", "IMPORTADA", "DUPLICADA"].includes(item.status) ? `rgb(${C.green})` : item.status === "NA_FILA" ? `rgb(${C.yellow})` : "#fca5a5" }}>{STATUS[item.status] || item.status}</span>{item.ultimo_erro && <div style={{ color: "#fca5a5", marginTop: 3 }}>{item.ultimo_erro}</div>}</td><td>{item.tentativas}</td><td>{dataHora(item.atualizado_em)}</td></tr>)}</tbody></table></div>}
+      </section>
+
+      <section style={S.card}><div style={S.cardTitle}>XMLs armazenados · {competencia.split("-").reverse().join("/")}</div>
+        {!dados.documentos.length ? <div style={{ color: C.muted, padding: "22px 0" }}>Nenhum XML completo nesta competência.</div> : <div style={{ display: "grid" }}>{dados.documentos.map(doc => <div key={doc.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", padding: "12px 0", borderBottom: `1px solid ${C.border}` }}><div style={{ minWidth: 240, flex: 1 }}><strong>NF-e {doc.numero_nfe || "—"}{doc.serie_nfe ? ` · Série ${doc.serie_nfe}` : ""}</strong>{doc.emitente_nome ? ` · ${doc.emitente_nome}` : ""}<div style={{ color: C.muted, fontSize: 11, marginTop: 4 }}>{doc.uf_origem && doc.uf_destino ? `${doc.uf_origem} → ${doc.uf_destino} · ` : ""}{new Date(doc.data_emissao).toLocaleDateString("pt-BR")} · {dinheiro(doc.valor_total_xml)}</div></div><span style={{ color: doc.processamento_status === "falha" ? "#fca5a5" : `rgb(${C.green})`, fontSize: 12, fontWeight: 600 }}>{doc.processamento_status === "importada" ? "Importada para cálculo" : doc.processamento_status === "interna" ? "Arquivada · mesma UF" : doc.processamento_status}</span><button disabled={ocupado === doc.id} onClick={() => baixar(doc)} style={S.btn("ghost")}>Baixar XML</button></div>)}</div>}
+      </section>
+    </>}
   </div>;
 }

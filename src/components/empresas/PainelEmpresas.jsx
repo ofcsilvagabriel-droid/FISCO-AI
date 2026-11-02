@@ -11,7 +11,12 @@ const formatarCnpj = valor => {
   return v.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5");
 };
 const erroTexto = erro => erro?.message || String(erro || "Falha inesperada.");
-const novoFormulario = () => ({ cnpj: CNPJ_VAZIO, razao_social: "", nome_fantasia: "", uf: "", inscricao_estadual: "", regime: "", ativa: true, busca_xml_automatica: true });
+const novoFormulario = () => ({
+  cnpj: CNPJ_VAZIO, razao_social: "", nome_fantasia: "", uf: "", inscricao_estadual: "", regime: "",
+  situacao: "ATIVA", tipo_estabelecimento: "MATRIZ", cnae_principal: "", email: "", telefone: "",
+  cep: "", municipio: "", bairro: "", logradouro: "", numero: "", complemento: "", ativa: true,
+  busca_xml_automatica: false,
+});
 
 export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], memoria = [], onNavigate }) {
   const [empresas, setEmpresas] = useState([]);
@@ -26,6 +31,8 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
   const [aviso, setAviso] = useState("");
   const [acessoRevelado, setAcessoRevelado] = useState(null);
   const [revelandoAcesso, setRevelandoAcesso] = useState(false);
+  const [busca, setBusca] = useState("");
+  const [aba, setAba] = useState("visao");
 
   const carregar = useCallback(async () => {
     const lista = await listarEmpresasFisco();
@@ -45,12 +52,23 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
       uf: empresa.uf || "",
       inscricao_estadual: empresa.inscricao_estadual || "",
       regime: empresa.regime || "",
+      situacao: empresa.situacao || "ATIVA",
+      tipo_estabelecimento: empresa.tipo_estabelecimento || "MATRIZ",
+      cnae_principal: empresa.cnae_principal || "",
+      email: empresa.email || "",
+      telefone: empresa.telefone || "",
+      cep: empresa.cep || "",
+      municipio: empresa.municipio || "",
+      bairro: empresa.bairro || "",
+      logradouro: empresa.logradouro || "",
+      numero: empresa.numero || "",
+      complemento: empresa.complemento || "",
       ativa: empresa.ativa !== false,
-      busca_xml_automatica: empresa.busca_xml_automatica !== false,
+      busca_xml_automatica: false,
     });
     setAcesso({ sistema: empresa.acesso_sefaz?.sistema || "Portal SEFAZ", endereco_portal: empresa.acesso_sefaz?.endereco_portal || "", usuario: "", senha: "", observacoes: empresa.acesso_sefaz?.observacoes || "" });
     setAcessoRevelado(null);
-    setArquivoA1(null); setSenhaA1(""); setNova(false);
+    setArquivoA1(null); setSenhaA1(""); setNova(false); setAba("visao");
   }, [empresa]);
 
   const iniciarNova = () => {
@@ -122,7 +140,7 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
       const bytes = new Uint8Array(await arquivoA1.arrayBuffer());
       let binario = ""; for (const byte of bytes) binario += String.fromCharCode(byte);
       await salvarCertificadoDfe({ data: { cnpj: empresa.cnpj, nome: empresa.nome_fantasia || empresa.razao_social, pfxBase64: btoa(binario), senha: senhaA1 } });
-      setArquivoA1(null); setSenhaA1(""); formulario.reset(); await carregar(); setAviso("Certificado vinculado à empresa para a busca de XMLs.");
+      setArquivoA1(null); setSenhaA1(""); formulario.reset(); await carregar(); setAviso("Certificado vinculado ao cadastro fiscal da empresa.");
     } catch (e) { setErro(erroTexto(e)); }
     finally { setOcupado(""); }
   };
@@ -142,11 +160,16 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
     historico: historico.filter(item => digitos(item?.nota?.destinatario_cnpj) === cnpj).length,
     memoria: memoria.filter(item => digitos(item?.empresa_id) === cnpj).length,
   });
-  const listaEmpresas = empresas.map(item => <button key={item.cnpj} type="button" onClick={() => { setSelecionada(item.cnpj); setNova(false); setErro(""); setAviso(""); }} style={{ ...S.histItem(selecionada === item.cnpj), textAlign: "left", cursor: "pointer" }}>
+  const empresasFiltradas = empresas.filter(item => {
+    const termo = busca.trim().toLowerCase();
+    return !termo || [item.razao_social, item.nome_fantasia, item.cnpj, item.inscricao_estadual].some(valor => String(valor || "").toLowerCase().includes(termo));
+  });
+  const listaEmpresas = empresasFiltradas.map(item => <button key={item.cnpj} type="button" onClick={() => { setSelecionada(item.cnpj); setNova(false); setErro(""); setAviso(""); }} style={{ ...S.histItem(selecionada === item.cnpj), textAlign: "left", cursor: "pointer" }}>
     <div style={{ fontWeight: 700, fontSize: 12, color: C.text }}>{item.razao_social}</div>
     <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>{formatarCnpj(item.cnpj)} · {item.uf || "UF não informada"}</div>
     <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
-      <span style={{ fontSize: 10, color: item.ativa ? "#34d399" : C.muted }}>{item.ativa ? "Ativa" : "Inativa"}</span>
+      <span style={{ fontSize: 10, color: item.situacao === "ATIVA" ? "#34d399" : C.muted }}>{item.situacao === "ATIVA" ? "Ativa" : item.situacao}</span>
+      <span style={{ fontSize: 10, color: C.muted }}>{item.tipo_estabelecimento === "FILIAL" ? "Filial" : "Matriz"}</span>
       {item.certificado && <span style={{ fontSize: 10, color: "#68d391" }}>A1 vinculado</span>}
       {item.acesso_sefaz && <span style={{ fontSize: 10, color: "#68b6ff" }}>Acesso SEFAZ</span>}
     </div>
@@ -154,7 +177,7 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
 
   return <div style={{ display: "grid", gap: 14 }}>
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-      <div><div style={S.cardTitle}>Cadastro de empresas</div><div style={{ color: C.muted, fontSize: 12 }}>Um cadastro por CNPJ conecta notas, histórico, memória, certificados e obrigações.</div></div>
+      <div><div style={{ ...S.cardTitle, fontSize: 18 }}>Empresas</div><div style={{ color: C.muted, fontSize: 12 }}>Cadastro mestre para documentos, regras fiscais, certificados, acessos e auditoria.</div></div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <label style={{ ...S.btn("ghost"), cursor: ocupado === "importacao" ? "wait" : "pointer", opacity: ocupado === "importacao" ? 0.65 : 1 }}>
           {ocupado === "importacao" ? "Importando…" : "Importar cadastro JSON"}
@@ -165,10 +188,12 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
     </div>
     {erro && <div role="alert" style={S.alert("error")}>{erro}</div>}
     {aviso && <div role="status" style={S.alert("success")}>{aviso}</div>}
-    <div style={{ display: "grid", gridTemplateColumns: "minmax(230px, 0.75fr) minmax(0, 1.6fr)", gap: 14, alignItems: "start" }}>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(min(320px,100%),1fr))", gap: 14, alignItems: "start" }}>
       <div style={S.card}>
-        <div style={S.cardTitle}>Empresas ({listaEmpresas.length})</div>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 10 }}><div style={S.cardTitle}>Empresas</div><span style={{ color: C.muted, fontSize: 12 }}>{empresasFiltradas.length} de {empresas.length}</span></div>
+        <input value={busca} onChange={e => setBusca(e.target.value)} placeholder="Buscar por nome, CNPJ ou inscrição" aria-label="Buscar empresas" style={{ ...S.inp, width: "100%", marginBottom: 10 }}/>
         {!empresas.length && <p style={{ color: C.muted, fontSize: 12 }}>Cadastre a primeira empresa para começar.</p>}
+        {!!empresas.length && !listaEmpresas.length && <p style={{ color: C.muted, fontSize: 12 }}>Nenhuma empresa corresponde aos filtros.</p>}
         <div style={{ display: "grid", gap: 6, maxHeight: 560, overflowY: "auto" }}>
           {listaEmpresas}
         </div>
@@ -176,26 +201,52 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
 
       <div style={{ display: "grid", gap: 14, minWidth: 0 }}>
         {(empresa || nova) ? <>
-          <div style={S.card}>
+          {empresa && <div style={{ ...S.card, display: "grid", gap: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+              <div><div style={{ fontSize: 20, fontWeight: 700, color: C.text }}>{empresa.razao_social}</div><div style={{ color: C.muted, fontSize: 12, marginTop: 4 }}>{empresa.nome_fantasia || "Sem nome fantasia"} · {formatarCnpj(empresa.cnpj)} · {empresa.uf || "UF não informada"}</div></div>
+              <span style={{ color: empresa.situacao === "ATIVA" ? "#34d399" : C.muted, fontSize: 12, fontWeight: 700 }}>{empresa.situacao || "ATIVA"}</span>
+            </div>
+            <div role="tablist" aria-label="Seções da empresa" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {[["visao", "Visão geral"], ["cadastro", "Cadastro"], ["fiscal", "Fiscal"], ["acessos", "Certificados e acessos"]].map(([id, rotulo]) => <button key={id} role="tab" aria-selected={aba === id} onClick={() => setAba(id)} style={aba === id ? S.btn("primary") : S.btn("ghost")}>{rotulo}</button>)}
+            </div>
+          </div>}
+
+          {(nova || aba === "cadastro") && <div style={S.card}>
             <div style={S.cardTitle}>{nova ? "Nova empresa" : "Dados cadastrais"}</div>
             <form onSubmit={salvarEmpresa} style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 10, alignItems: "end" }}>
               <label style={{ fontSize: 12 }}>CNPJ<input required inputMode="numeric" maxLength={18} disabled={!nova} value={formatarCnpj(form.cnpj)} onChange={e => setForm(v => ({ ...v, cnpj: digitos(e.target.value) }))} placeholder="00.000.000/0000-00" style={inputStyle}/></label>
               <label style={{ fontSize: 12 }}>Razão social<input required maxLength={180} value={form.razao_social} onChange={e => setForm(v => ({ ...v, razao_social: e.target.value }))} style={inputStyle}/></label>
               <label style={{ fontSize: 12 }}>Nome fantasia<input maxLength={180} value={form.nome_fantasia} onChange={e => setForm(v => ({ ...v, nome_fantasia: e.target.value }))} style={inputStyle}/></label>
+              <label style={{ fontSize: 12 }}>Situação<select value={form.situacao} onChange={e => setForm(v => ({ ...v, situacao: e.target.value, ativa: e.target.value === "ATIVA" }))} style={inputStyle}><option value="ATIVA">Ativa</option><option value="INATIVA">Inativa</option><option value="SUSPENSA">Suspensa</option><option value="BAIXADA">Baixada</option></select></label>
+              <label style={{ fontSize: 12 }}>Estabelecimento<select value={form.tipo_estabelecimento} onChange={e => setForm(v => ({ ...v, tipo_estabelecimento: e.target.value }))} style={inputStyle}><option value="MATRIZ">Matriz</option><option value="FILIAL">Filial</option></select></label>
               <label style={{ fontSize: 12 }}>UF<input maxLength={2} value={form.uf} onChange={e => setForm(v => ({ ...v, uf: e.target.value.toUpperCase() }))} placeholder="UF" style={inputStyle}/></label>
               <label style={{ fontSize: 12 }}>Inscrição estadual<input maxLength={32} value={form.inscricao_estadual} onChange={e => setForm(v => ({ ...v, inscricao_estadual: e.target.value }))} style={inputStyle}/></label>
-              <label style={{ fontSize: 12 }}>Regime tributário<select value={form.regime} onChange={e => setForm(v => ({ ...v, regime: e.target.value }))} style={inputStyle}><option value="">Selecione</option>{REGIMES.map(([valor, rotulo]) => <option key={valor} value={valor}>{rotulo}</option>)}</select></label>
-              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12 }}><input type="checkbox" checked={form.ativa} onChange={e => setForm(v => ({ ...v, ativa: e.target.checked }))}/> Empresa ativa</label>
-              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12 }}><input type="checkbox" checked={form.busca_xml_automatica} onChange={e => setForm(v => ({ ...v, busca_xml_automatica: e.target.checked }))}/> Buscar XML automaticamente</label>
+              <label style={{ fontSize: 12 }}>E-mail<input type="email" maxLength={240} value={form.email} onChange={e => setForm(v => ({ ...v, email: e.target.value }))} style={inputStyle}/></label>
+              <label style={{ fontSize: 12 }}>Telefone<input maxLength={32} value={form.telefone} onChange={e => setForm(v => ({ ...v, telefone: e.target.value }))} style={inputStyle}/></label>
+              <label style={{ fontSize: 12 }}>CEP<input maxLength={9} value={form.cep} onChange={e => setForm(v => ({ ...v, cep: e.target.value }))} style={inputStyle}/></label>
+              <label style={{ fontSize: 12 }}>Município<input maxLength={120} value={form.municipio} onChange={e => setForm(v => ({ ...v, municipio: e.target.value }))} style={inputStyle}/></label>
+              <label style={{ fontSize: 12 }}>Bairro<input maxLength={120} value={form.bairro} onChange={e => setForm(v => ({ ...v, bairro: e.target.value }))} style={inputStyle}/></label>
+              <label style={{ fontSize: 12, gridColumn: "1 / -1" }}>Logradouro<input maxLength={240} value={form.logradouro} onChange={e => setForm(v => ({ ...v, logradouro: e.target.value }))} style={inputStyle}/></label>
+              <label style={{ fontSize: 12 }}>Número<input maxLength={32} value={form.numero} onChange={e => setForm(v => ({ ...v, numero: e.target.value }))} style={inputStyle}/></label>
+              <label style={{ fontSize: 12 }}>Complemento<input maxLength={120} value={form.complemento} onChange={e => setForm(v => ({ ...v, complemento: e.target.value }))} style={inputStyle}/></label>
               <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "flex-end", gap: 8 }}>
                 {nova && <button type="button" onClick={() => { setNova(false); setForm(novoFormulario()); }} style={S.btn("ghost")}>Cancelar</button>}
                 <button disabled={ocupado === "empresa"} type="submit" style={S.btn("primary")}>{ocupado === "empresa" ? "Salvando…" : "Salvar empresa"}</button>
               </div>
             </form>
-          </div>
+          </div>}
 
           {empresa && <>
-            <div style={S.card}>
+            {aba === "fiscal" && <div style={S.card}>
+              <div style={S.cardTitle}>Configuração fiscal</div>
+              <form onSubmit={salvarEmpresa} style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 10, alignItems: "end" }}>
+                <label style={{ fontSize: 12 }}>Regime tributário<select value={form.regime} onChange={e => setForm(v => ({ ...v, regime: e.target.value }))} style={inputStyle}><option value="">Selecione</option>{REGIMES.map(([valor, rotulo]) => <option key={valor} value={valor}>{rotulo}</option>)}</select></label>
+                <label style={{ fontSize: 12 }}>CNAE principal<input maxLength={16} value={form.cnae_principal} onChange={e => setForm(v => ({ ...v, cnae_principal: e.target.value }))} placeholder="0000-0/00" style={inputStyle}/></label>
+                <button disabled={ocupado === "empresa"} type="submit" style={S.btn("primary")}>{ocupado === "empresa" ? "Salvando…" : "Salvar configuração fiscal"}</button>
+              </form>
+            </div>}
+
+            {aba === "acessos" && <div style={S.card}>
               <div style={S.cardTitle}>Acesso ao portal da SEFAZ</div>
               <p style={{ color: C.muted, fontSize: 11, marginTop: -4 }}>As credenciais ficam criptografadas. Revele-as somente quando precisar consultar este acesso.</p>
               {empresa.acesso_sefaz && <div role="status" style={{ color: "#34d399", fontSize: 12, marginBottom: 10 }}>Acesso cadastrado · {empresa.acesso_sefaz.sistema} · atualizado em {new Date(empresa.acesso_sefaz.atualizado_em).toLocaleDateString("pt-BR")}</div>}
@@ -217,9 +268,9 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
                   <button disabled={ocupado === "acesso"} type="submit" style={S.btn("primary")}>{ocupado === "acesso" ? "Protegendo…" : empresa.acesso_sefaz ? "Atualizar acesso" : "Salvar acesso"}</button>
                 </div>
               </form>
-            </div>
+            </div>}
 
-            <div style={S.card}>
+            {aba === "acessos" && <div style={S.card}>
               <div style={S.cardTitle}>Certificado digital A1</div>
               {empresa.certificado ? <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
                 <div><strong>{empresa.certificado.titular || empresa.certificado.nome}</strong><div style={{ color: C.muted, fontSize: 11 }}>Válido até {new Date(empresa.certificado.validade_fim).toLocaleDateString("pt-BR")}</div></div>
@@ -229,9 +280,9 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
                 <label style={{ fontSize: 12 }}>Senha do certificado<input required type="password" autoComplete="new-password" value={senhaA1} onChange={e => setSenhaA1(e.target.value)} style={inputStyle}/></label>
                 <button disabled={ocupado === "certificado"} type="submit" style={S.btn("primary")}>{ocupado === "certificado" ? "Salvando…" : "Vincular certificado"}</button>
               </form>}
-            </div>
+            </div>}
 
-            <div style={S.card}>
+            {aba === "visao" && <div style={S.card}>
               <div style={S.cardTitle}>Dados vinculados pelo CNPJ</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 8 }}>
                 {Object.entries(contagemEmpresa(empresa.cnpj)).map(([rotulo, total]) => <div key={rotulo} style={{ background: "rgba(255,255,255,0.03)", borderRadius: 7, padding: "9px 12px" }}><div style={{ fontSize: 10, color: C.muted }}>{rotulo === "arquivo" ? "NF-e no Arquivo Fiscal" : rotulo === "historico" ? "Notas no Histórico" : "Decisões na Memória Protegida"}</div><div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginTop: 3 }}>{total}</div></div>)}
@@ -239,7 +290,7 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
               <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 10 }}>
                 {[["arquivo", "Arquivo Fiscal"], ["historico", "Histórico"], ["obsidian", "Memória Protegida"], ["dfe", "Docs Fiscais"]].map(([tab, label]) => <button key={tab} onClick={() => onNavigate?.(tab)} style={S.btn("ghost")}>{label}</button>)}
               </div>
-            </div>
+            </div>}
           </>}
         </> : <div style={{ ...S.card, textAlign: "center", padding: "48px 20px", color: C.muted }}><div style={{ fontSize: 30, marginBottom: 10 }}>🏢</div><div>Selecione uma empresa ou cadastre uma nova.</div></div>}
       </div>

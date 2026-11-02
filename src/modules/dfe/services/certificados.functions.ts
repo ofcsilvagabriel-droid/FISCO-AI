@@ -37,9 +37,6 @@ export const salvarCertificadoDfe = createServerFn({ method: "POST" })
       ...metadados, segredo_criptografado: segredo, atualizado_em: new Date().toISOString(),
     }, { onConflict: "user_id,cnpj" });
     if (error) throw new Error(error.message);
-    const { error: cursorErro } = await db.from("fiscoai_dfe_cursores")
-      .upsert({ user_id: context.userId, cnpj: data.cnpj }, { onConflict: "user_id,cnpj", ignoreDuplicates: true });
-    if (cursorErro) throw new Error(cursorErro.message);
     return { cnpj: data.cnpj, ...metadados };
   });
 

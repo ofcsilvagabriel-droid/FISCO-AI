@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.output/
+.vinxi/
+.tanstack/
+.nitro/
+.git/
+supabase/.temp/
+*.zip
+*.exe
