@@ -1,10 +1,4 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "tanstack-start",
-  "crons": [
-    {
-      "path": "/api/xml/cron",
-      "schedule": "0 6 * * *"
-    }
-  ]
+  "framework": "tanstack-start"
 }
