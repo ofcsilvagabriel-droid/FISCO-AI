@@ -35,7 +35,7 @@ export function extrairMaterialAssinatura(pfxBase64: string, senha: string) {
     ...(p12.getBags({ bagType: forge.pki.oids.keyBag })[forge.pki.oids.keyBag] || []),
   ];
   const certBags = p12.getBags({ bagType: forge.pki.oids.certBag })[forge.pki.oids.certBag] || [];
-  if (!keyBags[0]?.key) throw new Error("A chave privada do certificado não está disponível para assinar a Ciência da Emissão.");
+  if (!keyBags[0]?.key) throw new Error("A chave privada do certificado não está disponível para uso fiscal.");
   const chave = createPrivateKey(forge.pki.privateKeyToPem(keyBags[0].key));
   const certificado = certBags.find(bag => bag.cert && new X509Certificate(forge.pki.certificateToPem(bag.cert)).checkPrivateKey(chave))?.cert;
   if (!certificado) throw new Error("O certificado A1 não corresponde à chave privada.");

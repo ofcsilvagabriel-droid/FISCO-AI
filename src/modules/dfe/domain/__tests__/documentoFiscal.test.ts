@@ -12,10 +12,10 @@ describe("contratos do hub Documentos Fiscais", () => {
     expect(competenciaDaEmissao("data-inválida")).toBeNull();
   });
 
-  it("distingue resumo, XML completo e evento pelo schema", () => {
-    expect(tipoConteudoPeloSchema("resNFe_v1.01.xsd")).toBe("RESUMO");
+  it("aceita somente XML completo de NF-e", () => {
     expect(tipoConteudoPeloSchema("procNFe_v4.00.xsd")).toBe("XML_COMPLETO");
-    expect(tipoConteudoPeloSchema("procEventoNFe_v1.00.xsd")).toBe("EVENTO");
+    expect(() => tipoConteudoPeloSchema("resNFe_v1.01.xsd")).toThrow();
+    expect(() => tipoConteudoPeloSchema("procEventoNFe_v1.00.xsd")).toThrow();
   });
 
   it("exige identidade e integridade do arquivo armazenado", () => {

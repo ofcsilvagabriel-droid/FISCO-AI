@@ -1,12 +1,12 @@
 import { z } from "zod";
 
 export const origensDocumentoFiscal = [
-  "SEFAZ_DISTRIBUICAO",
-  "FISCALAPI_CHAVE",
+  "API_PROPRIA",
   "IMPORTACAO_MANUAL",
+  "ACERVO_LEGADO",
 ] as const;
 
-export const tiposConteudoDocumentoFiscal = ["RESUMO", "XML_COMPLETO", "EVENTO"] as const;
+export const tiposConteudoDocumentoFiscal = ["XML_COMPLETO"] as const;
 
 export const tiposArtefatoDocumentoFiscal = [
   "XML_ORIGINAL",
@@ -20,9 +20,6 @@ export const statusProcessamentoDocumentoFiscal = [
   "interna",
   "descartada",
   "falha",
-  "ciencia_pendente",
-  "ciencia_enviada",
-  "ciencia_erro",
 ] as const;
 
 export const documentoFiscalSchema = z.object({
@@ -32,10 +29,6 @@ export const documentoFiscalSchema = z.object({
   chaveAcesso: z
     .string()
     .regex(/^[0-9]{44}$/)
-    .nullable(),
-  nsu: z
-    .string()
-    .regex(/^[0-9]{15}$/)
     .nullable(),
   origem: z.enum(origensDocumentoFiscal),
   tipoDocumento: z.literal("NFE"),
@@ -71,7 +64,6 @@ export function competenciaDaEmissao(dataEmissao: string | null | undefined): st
 }
 
 export function tipoConteudoPeloSchema(schemaXml: string): TipoConteudoDocumentoFiscal {
-  if (/^resNFe/i.test(schemaXml)) return "RESUMO";
-  if (/^procNFe/i.test(schemaXml)) return "XML_COMPLETO";
-  return "EVENTO";
+  if (!/^procNFe/i.test(schemaXml)) throw new Error("Somente XML completo de NF-e é aceito.");
+  return "XML_COMPLETO";
 }

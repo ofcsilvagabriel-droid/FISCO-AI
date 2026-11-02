@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listarEmpresasFisco } from "@/modules/empresas/empresas.functions";
-import { baixarDocumentoDfe, marcarDocumentosDfe } from "@/modules/dfe/services/distribuicaoDfe.functions";
+import { baixarDocumentoFiscal, marcarDocumentosFiscais } from "@/modules/dfe/services/documentosFiscais.functions";
 import { importarXmlManualNoHub } from "@/modules/dfe/services/importacaoManual.functions";
 import { criarLoteRecuperacaoXml, listarCentralXml } from "@/modules/xml/services/recuperacaoXml.functions";
 import { parsearNFe } from "@/modules/xml/services/parsearNFe";
@@ -21,7 +21,7 @@ const STATUS = {
   BLOQUEADA: "Consulta bloqueada", FALHA_DEFINITIVA: "Falha definitiva",
 };
 
-export default function PainelDfe({ S, C, onImport, onNavigate }) {
+export default function PainelDfe({ S, C, onImport, onNavigate, empresaInicial = "" }) {
   const [empresas, setEmpresas] = useState([]);
   const [selecionada, setSelecionada] = useState("");
   const [competencia, setCompetencia] = useState(competenciaAtual);
@@ -30,6 +30,7 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
   const [ocupado, setOcupado] = useState("");
   const [erro, setErro] = useState("");
   const [aviso, setAviso] = useState("");
+  const processamentoAutomatico = useRef(new Set());
   const empresa = useMemo(() => empresas.find(item => item.cnpj === selecionada) || null, [empresas, selecionada]);
   const chaves = useMemo(() => extrairChaves(chavesTexto), [chavesTexto]);
 
@@ -44,6 +45,7 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
   }, [selecionada, competencia]);
 
   useEffect(() => { carregar().catch(e => setErro(erroTexto(e))); }, [carregar]);
+  useEffect(() => { if (empresaInicial) setSelecionada(empresaInicial); }, [empresaInicial]);
   useEffect(() => { atualizar().catch(e => setErro(erroTexto(e))); }, [atualizar]);
   useEffect(() => {
     if (!selecionada) return undefined;
@@ -76,7 +78,7 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
         const resumo = await onImport?.([{ name: arquivo.name, text: async () => texto, fiscoaiHubDocumento: true }]);
         const detalhe = resumo?.detalhes?.[0];
         const status = detalhe?.status === "ok" ? analisado.nota.uf_origem === analisado.nota.uf_destino ? "interna" : "importada" : "falha";
-        await marcarDocumentosDfe({ data: { items: [{ id: persistido.documentoId, status, erro: detalhe?.motivo }] } });
+        await marcarDocumentosFiscais({ data: { items: [{ id: persistido.documentoId, status, erro: detalhe?.motivo }] } });
         setAviso(persistido.duplicado ? "XML já existente; vínculo confirmado." : "XML validado, armazenado e processado.");
       } else {
         const encontradas = extrairChaves(texto);
@@ -92,7 +94,7 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
   const baixar = async documento => {
     setOcupado(documento.id); setErro("");
     try {
-      const resultado = await baixarDocumentoDfe({ data: { id: documento.id } });
+      const resultado = await baixarDocumentoFiscal({ data: { id: documento.id } });
       const url = URL.createObjectURL(new Blob([resultado.xml], { type: "application/xml" }));
       const link = document.createElement("a");
       link.href = url; link.download = `${documento.chave_acesso || documento.numero_nfe}.xml`; link.click();
@@ -100,6 +102,30 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
     } catch (e) { setErro(erroTexto(e)); }
     finally { setOcupado(""); }
   };
+
+  const processarPendente = useCallback(async documento => {
+    if (!onImport || processamentoAutomatico.current.has(documento.id)) return;
+    processamentoAutomatico.current.add(documento.id);
+    setOcupado(`processar-${documento.id}`); setErro("");
+    try {
+      const resultado = await baixarDocumentoFiscal({ data: { id: documento.id } });
+      const resumo = await onImport([{ name: `${documento.chave_acesso || documento.numero_nfe}.xml`, text: async () => resultado.xml, fiscoaiHubDocumento: true }]);
+      const detalhe = resumo?.detalhes?.[0];
+      const status = detalhe?.status === "ok" ? documento.uf_origem === documento.uf_destino ? "interna" : "importada" : "falha";
+      await marcarDocumentosFiscais({ data: { items: [{ id: documento.id, status, erro: detalhe?.motivo }] } });
+      setAviso(status === "falha" ? "Um XML recuperado precisa de revisão." : "XML recuperado processado e vinculado à apuração da empresa.");
+      await atualizar();
+    } catch (e) {
+      setErro(`Não foi possível processar automaticamente a NF-e ${documento.numero_nfe || ""}: ${erroTexto(e)}`);
+    } finally {
+      setOcupado("");
+    }
+  }, [atualizar, onImport]);
+
+  useEffect(() => {
+    const pendente = dados.documentos.find(documento => documento.processamento_status === "pendente" && !processamentoAutomatico.current.has(documento.id));
+    if (pendente && !ocupado) processarPendente(pendente);
+  }, [dados.documentos, ocupado, processarPendente]);
 
   const stats = [
     ["Na fila", dados.indicadores.naFila || 0, "Aguardando o worker da API", C.yellow],
@@ -117,7 +143,7 @@ export default function PainelDfe({ S, C, onImport, onNavigate }) {
     </header>
     {erro && <div role="alert" style={S.alert("error")}>{erro}</div>}
     {aviso && <div role="status" style={S.alert("success")}>{aviso}</div>}
-    <div role="status" style={S.alert("warn")}><strong>Transição da API:</strong> a consulta NSU foi desativada. A fila própria já está ativa; o worker do Consulta DANFE será habilitado após o teste autorizado do provedor.</div>
+    <div role="status" style={S.alert("warn")}><strong>API própria ativa:</strong> a fila, validação e armazenamento já estão operacionais. A recuperação externa permanece aguardando a conexão de um worker autorizado.</div>
 
     <section style={{ ...S.card, display: "grid", gap: 12 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 10 }}>

@@ -13,6 +13,9 @@ const empresaInput = z.object({
   regime: z.enum(["SN", "LP", "LR", "MEI", "OUTRO"]).optional().nullable(),
   situacao: z.enum(["ATIVA", "INATIVA", "SUSPENSA", "BAIXADA"]).default("ATIVA"),
   tipo_estabelecimento: z.enum(["MATRIZ", "FILIAL"]).default("MATRIZ"),
+  matriz_empresa_id: z.string().uuid().optional().nullable(),
+  codigo_interno: z.string().trim().max(40).optional().nullable(),
+  responsavel_nome: z.string().trim().max(180).optional().nullable(),
   cnae_principal: z.string().trim().max(16).optional().nullable(),
   email: z.string().trim().email().max(240).optional().nullable().or(z.literal("")),
   telefone: z.string().trim().max(32).optional().nullable(),
@@ -46,6 +49,10 @@ const empresaImportInput = z.object({
   }
 });
 const importarEmpresasInput = z.object({ empresas: z.array(empresaImportInput).min(1).max(100) });
+const integracaoInput = z.object({
+  cnpj: CNPJ,
+  habilitada: z.boolean(),
+});
 
 export const listarEmpresasFisco = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
@@ -53,7 +60,7 @@ export const listarEmpresasFisco = createServerFn({ method: "GET" })
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const db = supabaseAdmin as any;
     const [{ data: empresas, error }, { data: certificados, error: certificadoErro }, { data: acessos, error: acessoErro }] = await Promise.all([
-      db.from("fiscoai_empresas").select("empresa_id,cnpj,razao_social,nome_fantasia,uf,inscricao_estadual,regime,situacao,tipo_estabelecimento,cnae_principal,email,telefone,cep,municipio,bairro,logradouro,numero,complemento,ativa,busca_xml_automatica,criado_em,atualizado_em")
+      db.from("fiscoai_empresas").select("empresa_id,cnpj,razao_social,nome_fantasia,uf,inscricao_estadual,regime,situacao,tipo_estabelecimento,matriz_empresa_id,codigo_interno,responsavel_nome,cnae_principal,email,telefone,cep,municipio,bairro,logradouro,numero,complemento,ativa,busca_xml_automatica,criado_em,atualizado_em")
         .eq("user_id", context.userId).order("razao_social"),
       db.from("fiscoai_certificados_dfe").select("cnpj,nome,titular,validade_inicio,validade_fim,fingerprint_sha256,atualizado_em")
         .eq("user_id", context.userId),
@@ -76,12 +83,26 @@ export const salvarEmpresaFisco = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const db = supabaseAdmin as any;
+    if (data.tipo_estabelecimento === "FILIAL" && !data.matriz_empresa_id) {
+      throw new Error("Selecione a matriz à qual esta filial pertence.");
+    }
+    if (data.matriz_empresa_id) {
+      const { data: matriz, error: matrizErro } = await db.from("fiscoai_empresas")
+        .select("empresa_id,cnpj,tipo_estabelecimento")
+        .eq("user_id", context.userId).eq("empresa_id", data.matriz_empresa_id).maybeSingle();
+      if (matrizErro || !matriz || matriz.tipo_estabelecimento !== "MATRIZ" || matriz.cnpj === data.cnpj) {
+        throw new Error("A matriz selecionada não é válida para esta conta.");
+      }
+    }
     const { data: empresa, error } = await db.from("fiscoai_empresas").upsert({
       user_id: context.userId,
       ...data,
       uf: data.uf?.toUpperCase() || null,
       nome_fantasia: data.nome_fantasia || null,
       inscricao_estadual: data.inscricao_estadual || null,
+      matriz_empresa_id: data.tipo_estabelecimento === "FILIAL" ? data.matriz_empresa_id : null,
+      codigo_interno: data.codigo_interno || null,
+      responsavel_nome: data.responsavel_nome || null,
       cnae_principal: data.cnae_principal || null,
       email: data.email || null,
       telefone: data.telefone || null,
@@ -94,10 +115,115 @@ export const salvarEmpresaFisco = createServerFn({ method: "POST" })
       busca_xml_automatica: false,
       atualizado_em: new Date().toISOString(),
     }, { onConflict: "user_id,cnpj" })
-      .select("empresa_id,cnpj,razao_social,nome_fantasia,uf,inscricao_estadual,regime,situacao,tipo_estabelecimento,cnae_principal,email,telefone,cep,municipio,bairro,logradouro,numero,complemento,ativa,busca_xml_automatica,criado_em,atualizado_em")
+      .select("empresa_id,cnpj,razao_social,nome_fantasia,uf,inscricao_estadual,regime,situacao,tipo_estabelecimento,matriz_empresa_id,codigo_interno,responsavel_nome,cnae_principal,email,telefone,cep,municipio,bairro,logradouro,numero,complemento,ativa,busca_xml_automatica,criado_em,atualizado_em")
       .single();
     if (error) throw new Error(error.message);
+    await db.from("fiscoai_empresa_integracoes").upsert({
+      user_id: context.userId,
+      empresa_id: empresa.empresa_id,
+      empresa_cnpj: empresa.cnpj,
+      tipo: "RECUPERACAO_XML",
+    }, { onConflict: "user_id,empresa_id,tipo", ignoreDuplicates: true });
+    await db.from("fiscoai_empresa_usuarios").upsert({
+      user_id: context.userId,
+      empresa_id: empresa.empresa_id,
+      membro_user_id: context.userId,
+      papel: "PROPRIETARIO",
+    }, { onConflict: "user_id,empresa_id,membro_user_id", ignoreDuplicates: true });
+    await db.from("fiscoai_xml_auditoria").insert({
+      user_id: context.userId,
+      empresa_id: empresa.empresa_id,
+      empresa_cnpj: empresa.cnpj,
+      operacao: "SALVAR_EMPRESA",
+      status: "SUCESSO",
+      mensagem: "Cadastro empresarial atualizado.",
+    });
     return empresa;
+  });
+
+export const obterPainelEmpresa = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .validator((entrada: unknown) => cnpjInput.parse(entrada))
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const db = supabaseAdmin as any;
+    const { data: empresa, error: empresaErro } = await db.from("fiscoai_empresas")
+      .select("empresa_id,cnpj").eq("user_id", context.userId).eq("cnpj", data.cnpj).maybeSingle();
+    if (empresaErro || !empresa) throw new Error("Empresa não encontrada nesta conta.");
+    const [documentos, fila, auditoria, integracao, membros, filiais] = await Promise.all([
+      db.from("fiscoai_dfe_documentos")
+        .select("id,chave_acesso,numero_nfe,emitente_nome,data_emissao,valor_total_xml,processamento_status,origem,recebido_em")
+        .eq("user_id", context.userId).eq("cnpj", data.cnpj).eq("tipo_conteudo", "XML_COMPLETO")
+        .order("data_emissao", { ascending: false, nullsFirst: false }).limit(20),
+      db.from("fiscoai_xml_itens").select("status").eq("user_id", context.userId).eq("empresa_id", empresa.empresa_id),
+      db.from("fiscoai_xml_auditoria")
+        .select("id,operacao,status,codigo_retorno,mensagem,detalhes,criado_em,finalizado_em")
+        .eq("user_id", context.userId).eq("empresa_id", empresa.empresa_id)
+        .order("criado_em", { ascending: false }).limit(30),
+      db.from("fiscoai_empresa_integracoes")
+        .select("tipo,provedor,status,ultima_execucao_em,ultimo_sucesso_em,ultimo_erro,atualizado_em")
+        .eq("user_id", context.userId).eq("empresa_id", empresa.empresa_id).maybeSingle(),
+      db.from("fiscoai_empresa_usuarios")
+        .select("membro_user_id,papel,ativo,criado_em,atualizado_em")
+        .eq("user_id", context.userId).eq("empresa_id", empresa.empresa_id).order("criado_em"),
+      db.from("fiscoai_empresas")
+        .select("empresa_id,cnpj,razao_social,nome_fantasia,situacao")
+        .eq("user_id", context.userId).eq("matriz_empresa_id", empresa.empresa_id).order("razao_social"),
+    ]);
+    const falha = [documentos, fila, auditoria, integracao, membros, filiais].find(item => item.error)?.error;
+    if (falha) throw new Error(falha.message);
+    const itens = fila.data || [];
+    const docs = documentos.data || [];
+    const membrosDetalhados = await Promise.all((membros.data || []).map(async (membro: any) => {
+      const { data: usuario } = await supabaseAdmin.auth.admin.getUserById(membro.membro_user_id);
+      return { ...membro, email: usuario?.user?.email || null };
+    }));
+    return {
+      documentos: docs,
+      auditoria: auditoria.data || [],
+      integracao: integracao.data || null,
+      membros: membrosDetalhados,
+      filiais: filiais.data || [],
+      indicadores: {
+        documentos: docs.length,
+        importadas: docs.filter((item: any) => item.processamento_status === "importada").length,
+        internas: docs.filter((item: any) => item.processamento_status === "interna").length,
+        pendentes: itens.filter((item: any) => ["NA_FILA", "CONSULTANDO", "PROVEDOR_INDISPONIVEL", "BLOQUEADA"].includes(item.status)).length,
+        falhas: itens.filter((item: any) => item.status === "FALHA_DEFINITIVA").length,
+      },
+    };
+  });
+
+export const configurarIntegracaoXmlEmpresa = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .validator((entrada: unknown) => integracaoInput.parse(entrada))
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const db = supabaseAdmin as any;
+    const { data: empresa, error: empresaErro } = await db.from("fiscoai_empresas")
+      .select("empresa_id,cnpj").eq("user_id", context.userId).eq("cnpj", data.cnpj).maybeSingle();
+    if (empresaErro || !empresa) throw new Error("Empresa não encontrada nesta conta.");
+    const status = data.habilitada ? "AGUARDANDO_CONFIGURACAO" : "DESATIVADA";
+    const { error } = await db.from("fiscoai_empresa_integracoes").upsert({
+      user_id: context.userId,
+      empresa_id: empresa.empresa_id,
+      empresa_cnpj: empresa.cnpj,
+      tipo: "RECUPERACAO_XML",
+      provedor: "WORKER_AUTORIZADO",
+      status,
+      ultimo_erro: null,
+      atualizado_em: new Date().toISOString(),
+    }, { onConflict: "user_id,empresa_id,tipo" });
+    if (error) throw new Error(error.message);
+    await db.from("fiscoai_xml_auditoria").insert({
+      user_id: context.userId,
+      empresa_id: empresa.empresa_id,
+      empresa_cnpj: empresa.cnpj,
+      operacao: data.habilitada ? "HABILITAR_INTEGRACAO_XML" : "DESATIVAR_INTEGRACAO_XML",
+      status: "SUCESSO",
+      mensagem: data.habilitada ? "Integração aguardando worker autorizado." : "Integração desativada pelo usuário.",
+    });
+    return { status };
   });
 
 export const importarEmpresasFisco = createServerFn({ method: "POST" })

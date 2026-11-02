@@ -3158,6 +3158,7 @@ export default function App(){
   const[nuvemFiscal,setNuvemFiscal]=useState("verificando");
   const[alertasCertificados,setAlertasCertificados]=useState([]);
   const[empresasCadastro,setEmpresasCadastro]=useState([]);
+  const[empresaContexto,setEmpresaContexto]=useState("");
   useEffect(()=>{
     let ativo=true;
     Promise.all([loadArquivo(),HistoricoImportacaoService.load(),HistoricoApuracaoService.sincronizar()])
@@ -3683,6 +3684,19 @@ export default function App(){
 
   const fmt=(v)=>"R$ "+parseFloat(v||0).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2});
 
+  const navegarEmpresa=(destino,cnpj="")=>{
+    const contexto=String(cnpj||"").replace(/\D/g,"");
+    if(contexto){
+      setEmpresaContexto(contexto);
+      if(destino==="arquivo"){
+        const encontrado=Object.entries(arquivo).find(([,item])=>String(item?.cnpj||"").replace(/\D/g,"")===contexto);
+        setArqEmpresaSel(encontrado?.[0]||null); setArqMesSel(null);
+      }
+      if(destino==="historico") setHistEmpresaAberta(contexto);
+    }
+    setTab(destino);
+  };
+
   if(!dadosProntos){
     return <div style={{...S.app,display:"grid",placeItems:"center",padding:24,color:C.text}} role={erroPersistencia?"alert":"status"}>
       {erroPersistencia||"Carregando notas e histórico salvos…"}
@@ -3745,12 +3759,14 @@ export default function App(){
 
         <main style={S.main} className="animate-fadeIn" key={tab}>
 
+        {empresaContexto&&tab!=="empresas"&&<div role="status" style={{...S.card,padding:"9px 12px",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}><div style={{fontSize:11,color:C.muted}}>Empresa ativa: <strong style={{color:C.text}}>{empresasPorCnpj.get(empresaContexto)?.razao_social||formatCNPJ(empresaContexto)}</strong></div><div style={{display:"flex",gap:7}}><button style={S.btn("ghost")} onClick={()=>navegarEmpresa("empresas",empresaContexto)}>Abrir cadastro</button><button style={S.btn("ghost")} onClick={()=>setEmpresaContexto("")}>Limpar filtro</button></div></div>}
+
         {tab==="dfe"&&(nuvemFiscal==="ativa"
-          ? <PainelDfe S={S} C={C} onImport={importarLote} onNavigate={setTab}/>
+          ? <PainelDfe S={S} C={C} onImport={importarLote} onNavigate={navegarEmpresa} empresaInicial={empresaContexto}/>
           : <div style={S.card}>Entre na sua conta para cadastrar certificados e buscar XMLs com segurança. <a href="/auth">Abrir login</a></div>)}
 
         {tab==="empresas"&&(nuvemFiscal==="ativa"
-          ? <PainelEmpresas S={S} C={C} arquivo={arquivo} historico={historico} memoria={histApuracoes} onNavigate={setTab} onEmpresasChange={atualizarEmpresasCadastro}/>
+          ? <PainelEmpresas S={S} C={C} arquivo={arquivo} historico={historico} memoria={histApuracoes} onNavigate={navegarEmpresa} empresaInicial={empresaContexto} onEmpresasChange={setEmpresasCadastro}/>
           : <div style={S.card}>Entre na sua conta para cadastrar empresas, acessos SEFAZ e certificados com segurança. <a href="/auth">Abrir login</a></div>)}
 
         {/* ═══════════ IMPORTAR ═══════════ */}
@@ -4340,7 +4356,7 @@ export default function App(){
         {/* ═══════════ CONSULTA NCM ═══════════ */}
         {tab==="consulta"&&<ConsultaNCM/>}
 
-        {tab==="obsidian"&&<MemoriaObsidian empresasNomes={empresasNomesMemoria}/>}
+        {tab==="obsidian"&&<MemoriaObsidian empresasNomes={empresasNomesMemoria} empresaInicial={empresaContexto}/>}
 
 
 
@@ -4363,7 +4379,7 @@ export default function App(){
               )}
               {(()=>{
                 const termo=histBusca.replace(/\D/g,"");
-                const filtrados=historico.filter(h=>!termo||String(h.nota.numero||"").replace(/\D/g,"").includes(termo));
+                const filtrados=historico.filter(h=>(!empresaContexto||String(h.nota.destinatario_cnpj||"").replace(/\D/g,"")===empresaContexto)&&(!termo||String(h.nota.numero||"").replace(/\D/g,"").includes(termo)));
                 if(historico.length&&!filtrados.length)
                   return <div style={{color:C.muted,fontSize:12,textAlign:"center",padding:"16px 0"}}>Nenhuma nota com o número “{histBusca}”.</div>;
                 const grupos=new Map();

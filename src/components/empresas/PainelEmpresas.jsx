@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { importarEmpresasFisco, listarEmpresasFisco, removerAcessoSefazEmpresa, revelarAcessoSefazEmpresa, salvarAcessoSefazEmpresa, salvarEmpresaFisco } from "@/modules/empresas/empresas.functions";
+import { configurarIntegracaoXmlEmpresa, importarEmpresasFisco, listarEmpresasFisco, obterPainelEmpresa, removerAcessoSefazEmpresa, revelarAcessoSefazEmpresa, salvarAcessoSefazEmpresa, salvarEmpresaFisco } from "@/modules/empresas/empresas.functions";
 import { excluirCertificadoDfe, salvarCertificadoDfe } from "@/modules/dfe/services/certificados.functions";
 
 const REGIMES = [["SN", "Simples Nacional"], ["LP", "Lucro Presumido"], ["LR", "Lucro Real"], ["MEI", "MEI"], ["OUTRO", "Outro"]];
@@ -13,12 +13,12 @@ const formatarCnpj = valor => {
 const erroTexto = erro => erro?.message || String(erro || "Falha inesperada.");
 const novoFormulario = () => ({
   cnpj: CNPJ_VAZIO, razao_social: "", nome_fantasia: "", uf: "", inscricao_estadual: "", regime: "",
-  situacao: "ATIVA", tipo_estabelecimento: "MATRIZ", cnae_principal: "", email: "", telefone: "",
+  situacao: "ATIVA", tipo_estabelecimento: "MATRIZ", matriz_empresa_id: null, codigo_interno: "", responsavel_nome: "", cnae_principal: "", email: "", telefone: "",
   cep: "", municipio: "", bairro: "", logradouro: "", numero: "", complemento: "", ativa: true,
   busca_xml_automatica: false,
 });
 
-export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], memoria = [], onNavigate }) {
+export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], memoria = [], onNavigate, onEmpresasChange, empresaInicial = "" }) {
   const [empresas, setEmpresas] = useState([]);
   const [selecionada, setSelecionada] = useState("");
   const [form, setForm] = useState(novoFormulario);
@@ -33,14 +33,17 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
   const [revelandoAcesso, setRevelandoAcesso] = useState(false);
   const [busca, setBusca] = useState("");
   const [aba, setAba] = useState("visao");
+  const [painel, setPainel] = useState({ documentos: [], auditoria: [], integracao: null, membros: [], filiais: [], indicadores: {} });
 
   const carregar = useCallback(async () => {
     const lista = await listarEmpresasFisco();
     setEmpresas(lista);
+    onEmpresasChange?.(lista);
     return lista;
-  }, []);
+  }, [onEmpresasChange]);
 
   useEffect(() => { carregar().catch(e => setErro(erroTexto(e))); }, [carregar]);
+  useEffect(() => { if (empresaInicial) setSelecionada(empresaInicial); }, [empresaInicial]);
 
   const empresa = useMemo(() => empresas.find(item => item.cnpj === selecionada) || null, [empresas, selecionada]);
   useEffect(() => {
@@ -54,6 +57,9 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
       regime: empresa.regime || "",
       situacao: empresa.situacao || "ATIVA",
       tipo_estabelecimento: empresa.tipo_estabelecimento || "MATRIZ",
+      matriz_empresa_id: empresa.matriz_empresa_id || null,
+      codigo_interno: empresa.codigo_interno || "",
+      responsavel_nome: empresa.responsavel_nome || "",
       cnae_principal: empresa.cnae_principal || "",
       email: empresa.email || "",
       telefone: empresa.telefone || "",
@@ -69,6 +75,7 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
     setAcesso({ sistema: empresa.acesso_sefaz?.sistema || "Portal SEFAZ", endereco_portal: empresa.acesso_sefaz?.endereco_portal || "", usuario: "", senha: "", observacoes: empresa.acesso_sefaz?.observacoes || "" });
     setAcessoRevelado(null);
     setArquivoA1(null); setSenhaA1(""); setNova(false); setAba("visao");
+    obterPainelEmpresa({ data: { cnpj: empresa.cnpj } }).then(setPainel).catch(e => setErro(erroTexto(e)));
   }, [empresa]);
 
   const iniciarNova = () => {
@@ -153,6 +160,17 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
     finally { setOcupado(""); }
   };
 
+  const configurarIntegracao = async habilitada => {
+    if (!empresa) return;
+    setOcupado("integracao"); setErro(""); setAviso("");
+    try {
+      await configurarIntegracaoXmlEmpresa({ data: { cnpj: empresa.cnpj, habilitada } });
+      setPainel(await obterPainelEmpresa({ data: { cnpj: empresa.cnpj } }));
+      setAviso(habilitada ? "Integração preparada; falta conectar um worker autorizado." : "Integração de recuperação desativada.");
+    } catch (e) { setErro(erroTexto(e)); }
+    finally { setOcupado(""); }
+  };
+
   const inputStyle = { ...S.inp, width: "100%" };
   const cadastroRegistros = Object.entries(arquivo || {}).map(([chave, item]) => ({ chave, ...item }));
   const contagemEmpresa = cnpj => ({
@@ -207,7 +225,7 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
               <span style={{ color: empresa.situacao === "ATIVA" ? "#34d399" : C.muted, fontSize: 12, fontWeight: 700 }}>{empresa.situacao || "ATIVA"}</span>
             </div>
             <div role="tablist" aria-label="Seções da empresa" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {[["visao", "Visão geral"], ["cadastro", "Cadastro"], ["fiscal", "Fiscal"], ["acessos", "Certificados e acessos"]].map(([id, rotulo]) => <button key={id} role="tab" aria-selected={aba === id} onClick={() => setAba(id)} style={aba === id ? S.btn("primary") : S.btn("ghost")}>{rotulo}</button>)}
+              {[["visao", "Visão geral"], ["cadastro", "Cadastro"], ["fiscal", "Fiscal"], ["certificados", "Certificados"], ["acessos", "Acessos"], ["documentos", "Documentos"], ["integracoes", "Integrações"], ["equipe", "Equipe"], ["auditoria", "Auditoria"]].map(([id, rotulo]) => <button key={id} role="tab" aria-selected={aba === id} onClick={() => setAba(id)} style={aba === id ? S.btn("primary") : S.btn("ghost")}>{rotulo}</button>)}
             </div>
           </div>}
 
@@ -219,6 +237,9 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
               <label style={{ fontSize: 12 }}>Nome fantasia<input maxLength={180} value={form.nome_fantasia} onChange={e => setForm(v => ({ ...v, nome_fantasia: e.target.value }))} style={inputStyle}/></label>
               <label style={{ fontSize: 12 }}>Situação<select value={form.situacao} onChange={e => setForm(v => ({ ...v, situacao: e.target.value, ativa: e.target.value === "ATIVA" }))} style={inputStyle}><option value="ATIVA">Ativa</option><option value="INATIVA">Inativa</option><option value="SUSPENSA">Suspensa</option><option value="BAIXADA">Baixada</option></select></label>
               <label style={{ fontSize: 12 }}>Estabelecimento<select value={form.tipo_estabelecimento} onChange={e => setForm(v => ({ ...v, tipo_estabelecimento: e.target.value }))} style={inputStyle}><option value="MATRIZ">Matriz</option><option value="FILIAL">Filial</option></select></label>
+              {form.tipo_estabelecimento === "FILIAL" && <label style={{ fontSize: 12 }}>Matriz<select required value={form.matriz_empresa_id || ""} onChange={e => setForm(v => ({ ...v, matriz_empresa_id: e.target.value || null }))} style={inputStyle}><option value="">Selecione</option>{empresas.filter(item => item.tipo_estabelecimento === "MATRIZ" && item.cnpj !== form.cnpj).map(item => <option key={item.empresa_id} value={item.empresa_id}>{item.razao_social}</option>)}</select></label>}
+              <label style={{ fontSize: 12 }}>Código interno<input maxLength={40} value={form.codigo_interno} onChange={e => setForm(v => ({ ...v, codigo_interno: e.target.value }))} style={inputStyle}/></label>
+              <label style={{ fontSize: 12 }}>Responsável<input maxLength={180} value={form.responsavel_nome} onChange={e => setForm(v => ({ ...v, responsavel_nome: e.target.value }))} style={inputStyle}/></label>
               <label style={{ fontSize: 12 }}>UF<input maxLength={2} value={form.uf} onChange={e => setForm(v => ({ ...v, uf: e.target.value.toUpperCase() }))} placeholder="UF" style={inputStyle}/></label>
               <label style={{ fontSize: 12 }}>Inscrição estadual<input maxLength={32} value={form.inscricao_estadual} onChange={e => setForm(v => ({ ...v, inscricao_estadual: e.target.value }))} style={inputStyle}/></label>
               <label style={{ fontSize: 12 }}>E-mail<input type="email" maxLength={240} value={form.email} onChange={e => setForm(v => ({ ...v, email: e.target.value }))} style={inputStyle}/></label>
@@ -270,7 +291,7 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
               </form>
             </div>}
 
-            {aba === "acessos" && <div style={S.card}>
+            {aba === "certificados" && <div style={S.card}>
               <div style={S.cardTitle}>Certificado digital A1</div>
               {empresa.certificado ? <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
                 <div><strong>{empresa.certificado.titular || empresa.certificado.nome}</strong><div style={{ color: C.muted, fontSize: 11 }}>Válido até {new Date(empresa.certificado.validade_fim).toLocaleDateString("pt-BR")}</div></div>
@@ -282,13 +303,42 @@ export default function PainelEmpresas({ S, C, arquivo = {}, historico = [], mem
               </form>}
             </div>}
 
+            {aba === "documentos" && <div style={{ ...S.card, display: "grid", gap: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}><div><div style={S.cardTitle}>Documentos fiscais</div><div style={{ color: C.muted, fontSize: 11 }}>XMLs completos vinculados pelo CNPJ do destinatário.</div></div><button onClick={() => onNavigate?.("dfe", empresa.cnpj)} style={S.btn("primary")}>Abrir Central de Documentos</button></div>
+              {!painel.documentos.length ? <div style={{ color: C.muted, padding: "18px 0" }}>Nenhum XML completo vinculado.</div> : <div style={{ display: "grid" }}>{painel.documentos.map(doc => <div key={doc.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "10px 0", borderBottom: `1px solid ${C.border}`, flexWrap: "wrap" }}><div><strong>NF-e {doc.numero_nfe || "—"}</strong>{doc.emitente_nome ? ` · ${doc.emitente_nome}` : ""}<div style={{ color: C.muted, fontSize: 10, marginTop: 3 }}>{doc.data_emissao ? new Date(doc.data_emissao).toLocaleDateString("pt-BR") : "Sem data"} · {doc.origem === "ACERVO_LEGADO" ? "Acervo anterior" : doc.origem === "API_PROPRIA" ? "API própria" : "Importação manual"}</div></div><span style={{ color: doc.processamento_status === "falha" ? "#fca5a5" : "#34d399", fontSize: 11, fontWeight: 700 }}>{doc.processamento_status}</span></div>)}</div>}
+            </div>}
+
+            {aba === "integracoes" && <div style={{ ...S.card, display: "grid", gap: 12 }}>
+              <div><div style={S.cardTitle}>Recuperação de XML</div><div style={{ color: C.muted, fontSize: 11 }}>A API própria controla a fila; somente um worker autorizado poderá consultar o provedor externo.</div></div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 8 }}>
+                {[["Status", painel.integracao?.status || "AGUARDANDO_CONFIGURACAO"], ["Provedor", painel.integracao?.provedor || "WORKER_AUTORIZADO"], ["Último sucesso", painel.integracao?.ultimo_sucesso_em ? new Date(painel.integracao.ultimo_sucesso_em).toLocaleString("pt-BR") : "Nunca"]].map(([rotulo, valor]) => <div key={rotulo} style={{ background: "rgba(255,255,255,0.03)", borderRadius: 7, padding: "10px 12px" }}><div style={{ color: C.muted, fontSize: 10 }}>{rotulo}</div><div style={{ color: C.text, fontWeight: 700, fontSize: 12, marginTop: 4 }}>{valor}</div></div>)}
+              </div>
+              {painel.integracao?.ultimo_erro && <div role="alert" style={S.alert("error")}>{painel.integracao.ultimo_erro}</div>}
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}><button disabled={ocupado === "integracao"} onClick={() => configurarIntegracao(painel.integracao?.status === "DESATIVADA")} style={painel.integracao?.status === "DESATIVADA" ? S.btn("primary") : S.btn("ghost")}>{ocupado === "integracao" ? "Salvando…" : painel.integracao?.status === "DESATIVADA" ? "Preparar integração" : "Desativar integração"}</button></div>
+            </div>}
+
+            {aba === "equipe" && <div style={{ ...S.card, display: "grid", gap: 12 }}>
+              <div><div style={S.cardTitle}>Usuários e permissões</div><div style={{ color: C.muted, fontSize: 11 }}>Acesso segregado por empresa. Convites dependerão do serviço de identidade corporativa.</div></div>
+              {painel.membros.map(membro => <div key={membro.membro_user_id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "10px 0", borderBottom: `1px solid ${C.border}` }}><div><strong>{membro.papel === "PROPRIETARIO" ? "Proprietário da conta" : "Usuário vinculado"}</strong><div style={{ color: C.muted, fontSize: 10, marginTop: 3 }}>{membro.email || membro.membro_user_id}</div></div><span style={{ color: membro.ativo ? "#34d399" : C.muted, fontSize: 11 }}>{membro.ativo ? "Ativo" : "Inativo"} · {membro.papel}</span></div>)}
+            </div>}
+
+            {aba === "auditoria" && <div style={{ ...S.card, display: "grid", gap: 10 }}>
+              <div><div style={S.cardTitle}>Auditoria operacional</div><div style={{ color: C.muted, fontSize: 11 }}>Alterações cadastrais, importações e tentativas da API própria.</div></div>
+              {!painel.auditoria.length ? <div style={{ color: C.muted, padding: "18px 0" }}>Nenhum evento registrado.</div> : painel.auditoria.map(evento => <div key={evento.id} style={{ display: "grid", gridTemplateColumns: "minmax(140px,0.6fr) minmax(200px,1fr) auto", gap: 10, alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${C.border}` }}><div><strong style={{ fontSize: 11 }}>{evento.operacao}</strong><div style={{ color: C.muted, fontSize: 9, marginTop: 3 }}>{new Date(evento.criado_em).toLocaleString("pt-BR")}</div></div><div style={{ color: C.muted, fontSize: 11 }}>{evento.mensagem || "—"}</div><span style={{ color: evento.status === "SUCESSO" ? "#34d399" : evento.status === "FALHA" ? "#fca5a5" : C.muted, fontSize: 10, fontWeight: 700 }}>{evento.status}</span></div>)}
+            </div>}
+
             {aba === "visao" && <div style={S.card}>
               <div style={S.cardTitle}>Dados vinculados pelo CNPJ</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 8 }}>
                 {Object.entries(contagemEmpresa(empresa.cnpj)).map(([rotulo, total]) => <div key={rotulo} style={{ background: "rgba(255,255,255,0.03)", borderRadius: 7, padding: "9px 12px" }}><div style={{ fontSize: 10, color: C.muted }}>{rotulo === "arquivo" ? "NF-e no Arquivo Fiscal" : rotulo === "historico" ? "Notas no Histórico" : "Decisões na Memória Protegida"}</div><div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginTop: 3 }}>{total}</div></div>)}
+                {[["XMLs recentes", painel.indicadores.documentos || 0], ["Fila pendente", painel.indicadores.pendentes || 0], ["Falhas da API", painel.indicadores.falhas || 0], ["Filiais", painel.filiais.length]].map(([rotulo, total]) => <div key={rotulo} style={{ background: "rgba(255,255,255,0.03)", borderRadius: 7, padding: "9px 12px" }}><div style={{ fontSize: 10, color: C.muted }}>{rotulo}</div><div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginTop: 3 }}>{total}</div></div>)}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 8, marginTop: 10 }}>
+                <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 7, padding: "10px 12px" }}><div style={{ color: C.muted, fontSize: 10 }}>Certificado digital</div><div style={{ color: empresa.certificado && new Date(empresa.certificado.validade_fim).getTime() > Date.now() ? "#34d399" : "#fca5a5", fontSize: 12, fontWeight: 700, marginTop: 4 }}>{empresa.certificado ? `Válido até ${new Date(empresa.certificado.validade_fim).toLocaleDateString("pt-BR")}` : "Não cadastrado"}</div></div>
+                <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 7, padding: "10px 12px" }}><div style={{ color: C.muted, fontSize: 10 }}>Integração de XML</div><div style={{ color: painel.integracao?.status === "ATIVA" ? "#34d399" : C.text, fontSize: 12, fontWeight: 700, marginTop: 4 }}>{painel.integracao?.status || "AGUARDANDO_CONFIGURACAO"}</div></div>
               </div>
               <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 10 }}>
-                {[["arquivo", "Arquivo Fiscal"], ["historico", "Histórico"], ["obsidian", "Memória Protegida"], ["dfe", "Docs Fiscais"]].map(([tab, label]) => <button key={tab} onClick={() => onNavigate?.(tab)} style={S.btn("ghost")}>{label}</button>)}
+                {[["arquivo", "Arquivo Fiscal"], ["historico", "Histórico"], ["obsidian", "Memória Protegida"], ["dfe", "Docs Fiscais"]].map(([tab, label]) => <button key={tab} onClick={() => onNavigate?.(tab, empresa.cnpj)} style={S.btn("ghost")}>{label}</button>)}
               </div>
             </div>}
           </>}

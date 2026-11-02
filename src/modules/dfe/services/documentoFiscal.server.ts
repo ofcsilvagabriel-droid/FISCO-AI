@@ -96,7 +96,6 @@ type PersistirXmlNfeCompletaInput = {
   cnpj: string;
   xml: Buffer;
   origem: OrigemDocumentoFiscal;
-  nsu?: string | null;
   schemaXml?: string;
   metadadosOrigem?: Record<string, unknown>;
 };
@@ -138,7 +137,7 @@ export async function persistirXmlNfeCompleta(input: PersistirXmlNfeCompletaInpu
   const competencia = competenciaDaEmissao(detalhes.data_emissao);
   const pasta = competencia ? competencia.replace("-", "/") : "sem-competencia";
   const prefixo = origem.toLowerCase().replace(/_/g, "-");
-  const path = `${userId}/${cnpj}/${pasta}/${prefixo}-${input.nsu || "sem-nsu"}-${hash}.enc`;
+  const path = `${userId}/${cnpj}/${pasta}/${prefixo}-${detalhes.chave_acesso}-${hash}.enc`;
   const { error: storageErro } = await db.storage
     .from(BUCKET_DFE)
     .upload(path, criptografarXml(input.xml), {
@@ -151,7 +150,6 @@ export async function persistirXmlNfeCompleta(input: PersistirXmlNfeCompletaInpu
   const dadosDocumento = {
     user_id: userId,
     cnpj,
-    nsu: input.nsu || null,
     schema_xml: input.schemaXml || "procNFe_v4.00.xsd",
     sha256: hash,
     storage_path: path,
@@ -163,10 +161,6 @@ export async function persistirXmlNfeCompleta(input: PersistirXmlNfeCompletaInpu
     atualizado_em: new Date().toISOString(),
     processamento_status: processamentoStatus,
     processamento_erro: null,
-    ciencia_cstat: null,
-    ciencia_motivo: null,
-    ciencia_protocolo: null,
-    ciencia_enviada_em: null,
     ...detalhes,
   };
   const gravacao = existente
@@ -216,10 +210,10 @@ async function registrarArtefato(
     tamanho: number;
   },
 ) {
-  const { error } = await db.from("fiscoai_dfe_artefatos").upsert(
+  const { error } = await db.from("fiscoai_xml_artefatos").upsert(
     {
       user_id: dados.userId,
-      cnpj: dados.cnpj,
+      empresa_cnpj: dados.cnpj,
       documento_id: dados.documentoId,
       tipo: "XML_ORIGINAL",
       origem: dados.origem,
@@ -229,7 +223,7 @@ async function registrarArtefato(
       tamanho_bytes: dados.tamanho,
       criptografia_versao: "AES-256-GCM-v1",
     },
-    { onConflict: "user_id,cnpj,documento_id,tipo,sha256", ignoreDuplicates: true },
+    { onConflict: "user_id,empresa_cnpj,documento_id,tipo,sha256", ignoreDuplicates: true },
   );
   if (error) {
     throw new Error(

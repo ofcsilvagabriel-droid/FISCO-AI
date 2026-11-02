@@ -286,7 +286,7 @@ function DetalheNCM({ h, onChange, onLog }) {
 }
 
 // -------------------------------------------------------------- RAIZ
-export default function MemoriaObsidian({ empresasNomes = {} }) {
+export default function MemoriaObsidian({ empresasNomes = {}, empresaInicial = "" }) {
   const [liberado, setLiberado] = useState(false);
   const [dados, setDados] = useState([]);
   const [sel, setSel] = useState(null);
@@ -303,6 +303,7 @@ export default function MemoriaObsidian({ empresasNomes = {} }) {
 
   const recarregar = useCallback(() => setDados(HistoricoApuracaoService.listarTudo()), []);
   useEffect(() => { if (liberado) recarregar(); }, [liberado, recarregar]);
+  useEffect(() => { setFiltroEmpresa(empresaInicial || ""); }, [empresaInicial]);
 
   const registrarLog = useCallback((acao, descricao, ncm) => {
     HistoricoApuracaoService.registrarAcesso({ usuario: "Usuário", acao, descricao, ncm });

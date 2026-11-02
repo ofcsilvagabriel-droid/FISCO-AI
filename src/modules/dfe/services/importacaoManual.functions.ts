@@ -35,31 +35,29 @@ export const importarXmlManualNoHub = createServerFn({ method: "POST" })
         xml: Buffer.from(data.xml, "utf8"),
         origem: "IMPORTACAO_MANUAL",
       });
-      await db.from("fiscoai_dfe_tentativas").insert({
+      await db.from("fiscoai_xml_auditoria").insert({
         user_id: context.userId,
-        cnpj: data.empresaCnpj,
+        empresa_cnpj: data.empresaCnpj,
         documento_id: resultado.documentoId,
-        origem: "IMPORTACAO_MANUAL",
         operacao: "IMPORTAR_XML",
         status: "SUCESSO",
         mensagem: resultado.duplicado ? "NF-e já existente no Hub." : "NF-e importada no Hub.",
         detalhes: { duplicado: resultado.duplicado },
-        iniciada_em: iniciadaEm,
-        finalizada_em: new Date().toISOString(),
+        criado_em: iniciadaEm,
+        finalizado_em: new Date().toISOString(),
       });
       return resultado;
     } catch (erro) {
       const mensagem = String(erro instanceof Error ? erro.message : erro).slice(0, 500);
-      await db.from("fiscoai_dfe_tentativas").insert({
+      await db.from("fiscoai_xml_auditoria").insert({
         user_id: context.userId,
-        cnpj: data.empresaCnpj,
-        origem: "IMPORTACAO_MANUAL",
+        empresa_cnpj: data.empresaCnpj,
         operacao: "IMPORTAR_XML",
         status: "FALHA",
         mensagem,
         detalhes: {},
-        iniciada_em: iniciadaEm,
-        finalizada_em: new Date().toISOString(),
+        criado_em: iniciadaEm,
+        finalizado_em: new Date().toISOString(),
       });
       throw erro;
     }
