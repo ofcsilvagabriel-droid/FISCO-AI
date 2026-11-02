@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listarEmpresasFisco } from "@/modules/empresas/empresas.functions";
-import { baixarDocumentoFiscal, marcarDocumentosFiscais } from "@/modules/dfe/services/documentosFiscais.functions";
+import { baixarDocumentoFiscal, baixarDocumentosFiscaisEmLote, listarDocumentosFiscaisParaExportacao, marcarDocumentosFiscais } from "@/modules/dfe/services/documentosFiscais.functions";
 import { importarXmlManualNoHub } from "@/modules/dfe/services/importacaoManual.functions";
 import { criarLoteRecuperacaoXml, listarCentralXml } from "@/modules/xml/services/recuperacaoXml.functions";
 import { parsearNFe } from "@/modules/xml/services/parsearNFe";
-import { interpretarPlanilhaSefazCsv } from "@/modules/xml/domain/planilhaSefaz";
+import { interpretarPlanilhaSefazCsv, vincularChavesPlanilhaSefaz } from "@/modules/xml/domain/planilhaSefaz";
 
 const digitos = valor => String(valor || "").replace(/\D/g, "");
 const erroTexto = erro => erro?.message || String(erro || "Falha inesperada.");
@@ -32,6 +32,7 @@ export default function PainelDfe({ S, C, onImport, onNavigate, empresaInicial =
   const [erro, setErro] = useState("");
   const [aviso, setAviso] = useState("");
   const [planilhaPendente, setPlanilhaPendente] = useState(null);
+  const [progressoExportacao, setProgressoExportacao] = useState(0);
   const processamentoAutomatico = useRef(new Set());
   const empresa = useMemo(() => empresas.find(item => item.cnpj === selecionada) || null, [empresas, selecionada]);
   const chaves = useMemo(() => extrairChaves(chavesTexto), [chavesTexto]);
@@ -78,12 +79,18 @@ export default function PainelDfe({ S, C, onImport, onNavigate, empresaInicial =
   };
 
   const confirmarPlanilha = async () => {
-    if (!planilhaPendente?.resultado?.chaves?.length || !selecionada) return;
+    if (!planilhaPendente?.grupos?.length) return;
     setOcupado("planilha"); setErro(""); setAviso("");
     try {
-      const resultado = await criarLotes(planilhaPendente.resultado.chaves, "ARQUIVO_CHAVES", planilhaPendente.empresaCnpj);
+      let enfileiradas = 0;
+      let duplicadas = 0;
+      for (const grupo of planilhaPendente.grupos) {
+        const resultado = await criarLotes(grupo.chaves, "ARQUIVO_CHAVES", grupo.cnpj);
+        enfileiradas += resultado.enfileiradas;
+        duplicadas += resultado.duplicadas;
+      }
       setPlanilhaPendente(null); await atualizar();
-      setAviso(`${resultado.enfileiradas} chave(s) da planilha da SEFAZ adicionada(s) à fila${resultado.duplicadas ? `; ${resultado.duplicadas} já cadastrada(s)` : ""}.`);
+      setAviso(`${enfileiradas} chave(s) da planilha da SEFAZ adicionada(s) à fila${duplicadas ? `; ${duplicadas} já cadastrada(s)` : ""}.`);
     } catch (e) { setErro(erroTexto(e)); }
     finally { setOcupado(""); }
   };
@@ -107,7 +114,9 @@ export default function PainelDfe({ S, C, onImport, onNavigate, empresaInicial =
       } else if (/\.csv$/i.test(arquivo.name)) {
         const resultado = interpretarPlanilhaSefazCsv(texto);
         if (!resultado.chaves.length) throw new Error("A planilha da SEFAZ não possui nenhuma chave de NF-e modelo 55 válida.");
-        setPlanilhaPendente({ nome: arquivo.name, resultado, empresaCnpj: selecionada, empresaNome: empresa?.razao_social || empresa?.nome_fantasia || selecionada });
+        const { grupos, semEmpresa } = vincularChavesPlanilhaSefaz(resultado, empresas, selecionada);
+        if (!grupos.length) throw new Error("Nenhuma chave pôde ser vinculada a uma empresa cadastrada.");
+        setPlanilhaPendente({ nome: arquivo.name, resultado, grupos, semEmpresa });
         setAviso("Planilha da SEFAZ analisada. Confira o resumo antes de adicionar as chaves à fila.");
       } else {
         const encontradas = extrairChaves(texto);
@@ -130,6 +139,35 @@ export default function PainelDfe({ S, C, onImport, onNavigate, empresaInicial =
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e) { setErro(erroTexto(e)); }
     finally { setOcupado(""); }
+  };
+
+  const exportarXmls = async () => {
+    if (!selecionada) return;
+    setOcupado("exportar"); setErro(""); setAviso(""); setProgressoExportacao(0);
+    try {
+      const documentos = [];
+      for (let pagina = 0; ; pagina += 1) {
+        const resultado = await listarDocumentosFiscaisParaExportacao({ data: { cnpj: selecionada, competencia, pagina, limite: 200 } });
+        documentos.push(...resultado.documentos);
+        if (!resultado.proximaPagina) break;
+      }
+      if (!documentos.length) throw new Error("Nenhum XML completo está disponível nesta competência.");
+      const { default: JSZip } = await import("jszip");
+      const zip = new JSZip();
+      for (let inicio = 0; inicio < documentos.length; inicio += 25) {
+        const lote = documentos.slice(inicio, inicio + 25);
+        const baixados = await baixarDocumentosFiscaisEmLote({ data: { ids: lote.map(documento => documento.id) } });
+        baixados.documentos.forEach(documento => zip.file(`NFe${documento.chave_acesso}.xml`, documento.xml));
+        setProgressoExportacao(Math.min(documentos.length, inicio + lote.length));
+      }
+      const arquivo = await zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } });
+      const url = URL.createObjectURL(arquivo);
+      const link = document.createElement("a");
+      link.href = url; link.download = `FiscoAI-XMLs-${selecionada}-${competencia}.zip`; link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setAviso(`${documentos.length} XML(s) exportado(s) em um arquivo ZIP.`);
+    } catch (e) { setErro(erroTexto(e)); }
+    finally { setOcupado(""); setProgressoExportacao(0); }
   };
 
   const processarPendente = useCallback(async documento => {
@@ -184,18 +222,20 @@ export default function PainelDfe({ S, C, onImport, onNavigate, empresaInicial =
 
     {planilhaPendente && <section style={{ ...S.card, display: "grid", gap: 12, borderColor: `rgba(${C.blue},0.45)` }}>
       <div style={S.cardTitle}>Conferir planilha da SEFAZ</div>
-      <div style={{ color: C.muted, fontSize: 12 }}>{planilhaPendente.nome} · as chaves serão vinculadas a <strong style={{ color: C.text }}>{planilhaPendente.empresaNome}</strong>.</div>
+      <div style={{ color: C.muted, fontSize: 12 }}>{planilhaPendente.nome} · {planilhaPendente.resultado.temColunaDestinatario ? "destinatários identificados pela planilha" : "o arquivo não informa o destinatário; foi usada a empresa selecionada"}.</div>
       <div style={{ ...S.statsGrid, gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 8 }}>
         {[
           ["Linhas", planilhaPendente.resultado.linhas.length],
-          ["NF-e válidas", planilhaPendente.resultado.chaves.length],
+          ["NF-e vinculadas", planilhaPendente.grupos.reduce((total, grupo) => total + grupo.chaves.length, 0)],
           ["Duplicadas", planilhaPendente.resultado.duplicadas.length],
-          ["Inválidas", planilhaPendente.resultado.invalidas.length],
+          ["Sem empresa", planilhaPendente.semEmpresa.length],
         ].map(([titulo, valor]) => <div key={titulo} style={{ ...S.card, padding: 12 }}><div style={{ color: C.muted, fontSize: 11 }}>{titulo}</div><strong style={{ fontSize: 20 }}>{valor}</strong></div>)}
       </div>
       <div style={{ color: C.muted, fontSize: 12 }}>Situações: {Object.entries(planilhaPendente.resultado.situacoes).map(([nome, total]) => `${nome}: ${total}`).join(" · ")}<br/>UF dos emitentes: {Object.entries(planilhaPendente.resultado.ufs).map(([nome, total]) => `${nome}: ${total}`).join(" · ")}</div>
+      <div style={{ color: C.muted, fontSize: 12 }}>Destino: {planilhaPendente.grupos.map(grupo => `${grupo.nome}: ${grupo.chaves.length}`).join(" · ")}</div>
       {!!planilhaPendente.resultado.invalidas.length && <div style={S.alert("warn")}>Linhas com chave inválida: {planilhaPendente.resultado.invalidas.slice(0, 20).map(item => item.linha).join(", ")}{planilhaPendente.resultado.invalidas.length > 20 ? "…" : ""}. Elas não serão importadas.</div>}
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}><button onClick={() => setPlanilhaPendente(null)} disabled={!!ocupado} style={S.btn("ghost")}>Cancelar</button><button onClick={confirmarPlanilha} disabled={!!ocupado} style={S.btn("primary")}>{ocupado === "planilha" ? "Criando lotes…" : `Importar ${planilhaPendente.resultado.chaves.length} chave(s)`}</button></div>
+      {!!planilhaPendente.semEmpresa.length && <div style={S.alert("warn")}>Linhas sem destinatário cadastrado: {planilhaPendente.semEmpresa.slice(0, 20).map(item => item.linha).join(", ")}{planilhaPendente.semEmpresa.length > 20 ? "…" : ""}. Cadastre essas empresas antes de importar suas chaves.</div>}
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}><button onClick={() => setPlanilhaPendente(null)} disabled={!!ocupado} style={S.btn("ghost")}>Cancelar</button><button onClick={confirmarPlanilha} disabled={!!ocupado} style={S.btn("primary")}>{ocupado === "planilha" ? "Criando lotes…" : `Importar ${planilhaPendente.grupos.reduce((total, grupo) => total + grupo.chaves.length, 0)} chave(s)`}</button></div>
     </section>}
 
     {selecionada && <>
@@ -211,7 +251,7 @@ export default function PainelDfe({ S, C, onImport, onNavigate, empresaInicial =
         {!dados.itens.length ? <div style={{ color: C.muted, padding: "22px 0" }}>Nenhuma chave cadastrada para esta empresa.</div> : <div style={{ overflowX: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}><thead><tr style={{ color: C.muted, textAlign: "left" }}><th style={{ padding: "10px 8px" }}>Chave</th><th>Status</th><th>Tentativas</th><th>Atualização</th></tr></thead><tbody>{dados.itens.map(item => <tr key={item.id} style={{ borderTop: `1px solid ${C.border}` }}><td style={{ padding: "11px 8px", fontFamily: "monospace" }}>{item.chave_acesso}</td><td><span style={{ color: ["ARMAZENADA", "IMPORTADA", "DUPLICADA"].includes(item.status) ? `rgb(${C.green})` : item.status === "NA_FILA" ? `rgb(${C.yellow})` : "#fca5a5" }}>{STATUS[item.status] || item.status}</span>{item.ultimo_erro && <div style={{ color: "#fca5a5", marginTop: 3 }}>{item.ultimo_erro}</div>}</td><td>{item.tentativas}</td><td>{dataHora(item.atualizado_em)}</td></tr>)}</tbody></table></div>}
       </section>
 
-      <section style={S.card}><div style={S.cardTitle}>XMLs armazenados · {competencia.split("-").reverse().join("/")}</div>
+      <section style={S.card}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}><div style={S.cardTitle}>XMLs armazenados · {competencia.split("-").reverse().join("/")}</div><button onClick={exportarXmls} disabled={!dados.indicadores.documentos || !!ocupado} style={S.btn("ghost")}>{ocupado === "exportar" ? `Exportando ${progressoExportacao}/${dados.indicadores.documentos}…` : "Exportar XMLs (.zip)"}</button></div>
         {!dados.documentos.length ? <div style={{ color: C.muted, padding: "22px 0" }}>Nenhum XML completo nesta competência.</div> : <div style={{ display: "grid" }}>{dados.documentos.map(doc => <div key={doc.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", padding: "12px 0", borderBottom: `1px solid ${C.border}` }}><div style={{ minWidth: 240, flex: 1 }}><strong>NF-e {doc.numero_nfe || "—"}{doc.serie_nfe ? ` · Série ${doc.serie_nfe}` : ""}</strong>{doc.emitente_nome ? ` · ${doc.emitente_nome}` : ""}<div style={{ color: C.muted, fontSize: 11, marginTop: 4 }}>{doc.uf_origem && doc.uf_destino ? `${doc.uf_origem} → ${doc.uf_destino} · ` : ""}{new Date(doc.data_emissao).toLocaleDateString("pt-BR")} · {dinheiro(doc.valor_total_xml)}</div></div><span style={{ color: doc.processamento_status === "falha" ? "#fca5a5" : `rgb(${C.green})`, fontSize: 12, fontWeight: 600 }}>{doc.processamento_status === "importada" ? "Importada para cálculo" : doc.processamento_status === "interna" ? "Arquivada · mesma UF" : doc.processamento_status}</span><button disabled={ocupado === doc.id} onClick={() => baixar(doc)} style={S.btn("ghost")}>Baixar XML</button></div>)}</div>}
       </section>
     </>}

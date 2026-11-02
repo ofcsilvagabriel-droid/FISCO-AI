@@ -51,7 +51,17 @@ export type LinhaPlanilhaSefaz = {
   ufEmitente: string;
   situacao: string;
   tipoOperacao: string;
+  destinatarioCnpj: string;
+  destinatarioNome: string;
 };
+
+type EmpresaDestino = {
+  cnpj: string;
+  razao_social?: string | null;
+  nome_fantasia?: string | null;
+};
+
+const digitos = (valor: unknown) => String(valor ?? "").replace(/\D/g, "");
 
 export function interpretarPlanilhaSefazCsv(conteudo: string) {
   const linhasTexto = String(conteudo || "")
@@ -64,7 +74,24 @@ export function interpretarPlanilhaSefazCsv(conteudo: string) {
   const indices = new Map(
     cabecalhos.map((cabecalho, indice) => [normalizarCabecalho(cabecalho), indice]),
   );
-  const indiceChave = indices.get("chave de acesso");
+  const indiceDe = (...nomes: string[]) => {
+    for (const nome of nomes) {
+      const indice = indices.get(nome);
+      if (indice != null) return indice;
+    }
+    return undefined;
+  };
+  const indiceChave = indiceDe("chave de acesso", "chave nf e", "chave nfe", "chnfe");
+  const indiceCnpjDestinatario = indiceDe(
+    "cnpj cpf destinatario",
+    "cpf cnpj destinatario",
+    "cnpj destinatario",
+  );
+  const indiceNomeDestinatario = indiceDe(
+    "razao social destinatario",
+    "nome destinatario",
+    "destinatario",
+  );
   if (indiceChave == null)
     throw new Error('A planilha não possui a coluna "Chave de Acesso" do relatório da SEFAZ.');
 
@@ -85,6 +112,12 @@ export function interpretarPlanilhaSefazCsv(conteudo: string) {
       ufEmitente: obter(campos, "uf emit"),
       situacao: obter(campos, "situacao"),
       tipoOperacao: obter(campos, "tipo operacao"),
+      destinatarioCnpj:
+        indiceCnpjDestinatario == null
+          ? ""
+          : String(campos[indiceCnpjDestinatario] || "").replace(/\D/g, ""),
+      destinatarioNome:
+        indiceNomeDestinatario == null ? "" : String(campos[indiceNomeDestinatario] || "").trim(),
     };
   });
 
@@ -109,5 +142,40 @@ export function interpretarPlanilhaSefazCsv(conteudo: string) {
     situacoes: contar(linhas.map((linha) => linha.situacao)),
     operacoes: contar(linhas.map((linha) => linha.tipoOperacao)),
     ufs: contar(linhas.map((linha) => linha.ufEmitente)),
+    temColunaDestinatario: indiceCnpjDestinatario != null,
   };
+}
+
+export function vincularChavesPlanilhaSefaz(
+  resultado: ReturnType<typeof interpretarPlanilhaSefazCsv>,
+  empresas: EmpresaDestino[],
+  cnpjSelecionado: string,
+) {
+  const empresasPorCnpj = new Map(empresas.map((empresa) => [digitos(empresa.cnpj), empresa]));
+  const chavesValidas = new Set(resultado.chaves);
+  const chavesVistas = new Set<string>();
+  const gruposPorCnpj = new Map<string, { cnpj: string; nome: string; chaves: string[] }>();
+  const semEmpresa: LinhaPlanilhaSefaz[] = [];
+
+  resultado.linhas.forEach((linha) => {
+    if (!chavesValidas.has(linha.chave) || chavesVistas.has(linha.chave)) return;
+    chavesVistas.add(linha.chave);
+    const cnpjDestino = resultado.temColunaDestinatario
+      ? digitos(linha.destinatarioCnpj)
+      : digitos(cnpjSelecionado);
+    const empresa = empresasPorCnpj.get(cnpjDestino);
+    if (!empresa) {
+      semEmpresa.push(linha);
+      return;
+    }
+    const grupo = gruposPorCnpj.get(cnpjDestino) || {
+      cnpj: cnpjDestino,
+      nome: empresa.razao_social || empresa.nome_fantasia || cnpjDestino,
+      chaves: [],
+    };
+    grupo.chaves.push(linha.chave);
+    gruposPorCnpj.set(cnpjDestino, grupo);
+  });
+
+  return { grupos: [...gruposPorCnpj.values()], semEmpresa };
 }
