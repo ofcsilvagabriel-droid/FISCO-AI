@@ -204,6 +204,7 @@ export default function PainelImportacaoPlanilhas({ S, C }) {
                   <th>Status</th>
                   <th>Chaves</th>
                   <th>Recuperadas</th>
+                  <th>Pendentes</th>
                   <th>Falhas</th>
                   <th>Importação</th>
                 </tr>
@@ -217,6 +218,9 @@ export default function PainelImportacaoPlanilhas({ S, C }) {
                     <td>{lote.status}</td>
                     <td>{lote.total_itens}</td>
                     <td style={{ color: `rgb(${C.green})` }}>{lote.total_recuperados}</td>
+                    <td style={{ color: lote.total_pendentes ? `rgb(${C.yellow})` : C.muted }}>
+                      {lote.total_pendentes}
+                    </td>
                     <td style={{ color: lote.total_falhas ? "#fca5a5" : C.muted }}>
                       {lote.total_falhas}
                     </td>

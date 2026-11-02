@@ -25,7 +25,7 @@ import PainelAuditoriaRecuperacao from "@/components/dfe/PainelAuditoriaRecupera
 import PainelEmpresas from "@/components/empresas/PainelEmpresas";
 import { listarCertificadosDfe } from "@/modules/dfe/services/certificados.functions";
 import { importarXmlManualNoHub } from "@/modules/dfe/services/importacaoManual.functions";
-import { baixarDocumentoFiscal, listarDocumentosPendentesProcessamento, marcarDocumentosFiscais } from "@/modules/dfe/services/documentosFiscais.functions";
+import { baixarDocumentoFiscal, listarDocumentosPendentesProcessamento, listarIdentidadesDocumentosFiscais, marcarDocumentosFiscais } from "@/modules/dfe/services/documentosFiscais.functions";
 import { listarPendenciasXml, marcarNotificacaoXmlLida } from "@/modules/xml/services/recuperacaoXml.functions";
 import { listarEmpresasFisco } from "@/modules/empresas/empresas.functions";
 import { HistoricoApuracaoService } from "@/modules/fiscal/domain/services/HistoricoApuracaoService";
@@ -77,8 +77,12 @@ function totaisAntecipacaoRegistro(registro) {
   };
 }
 export function upsertRegistroArquivo(arq, nota, produtos, calculos) {
+  const cnpjDestinatario=String(nota?.destinatario_cnpj||"").replace(/\D/g,"");
+  if(!/^\d{14}$/.test(cnpjDestinatario)){
+    throw new Error("A NF-e não possui um CNPJ destinatário válido no XML e não pode ser armazenada por empresa.");
+  }
   const dest = {
-    cnpj: nota.destinatario_cnpj || "",
+    cnpj: cnpjDestinatario,
     nome: nota.destinatario_nome || "Sem destinatário",
     ie: nota.destinatario_ie || "",
   };
@@ -205,7 +209,14 @@ export function upsertRegistroArquivo(arq, nota, produtos, calculos) {
     }),
     salvoEm: new Date().toISOString(),
   };
-  const next = { ...arq };
+  const next = {};
+  Object.entries(arq||{}).forEach(([grupo,valor])=>{
+    const registros=Array.isArray(valor?.registros)?valor.registros.filter(item=>{
+      const mesmaChave=registro.chaveNFe&&item?.chaveNFe===registro.chaveNFe;
+      return item?.id!==registro.id&&!mesmaChave;
+    }):[];
+    if(registros.length)next[grupo]={...valor,registros};
+  });
   const empresa = next[key] ? { ...next[key] } : { cnpj: dest.cnpj, ie: dest.ie, razaoSocial: dest.nome, registros: [] };
   empresa.razaoSocial = dest.nome || empresa.razaoSocial;
   empresa.cnpj = dest.cnpj || empresa.cnpj;
@@ -3164,6 +3175,7 @@ export default function App(){
   const[nuvemFiscal,setNuvemFiscal]=useState("verificando");
   const[alertasCertificados,setAlertasCertificados]=useState([]);
   const[empresasCadastro,setEmpresasCadastro]=useState([]);
+  const reconciliacaoFiscalRef=useRef(false);
   const[empresaContexto,setEmpresaContexto]=useState("");
   const[pendenciasXml,setPendenciasXml]=useState({total:0,empresas:[],notificacoes:[],naoLidas:0});
   const[painelPendencias,setPainelPendencias]=useState(false);
@@ -3209,6 +3221,24 @@ export default function App(){
     if(nuvemFiscal!=="ativa")return;
     atualizarEmpresasCadastro().catch(()=>{});
   },[nuvemFiscal,atualizarEmpresasCadastro]);
+  useEffect(()=>{
+    if(nuvemFiscal!=="ativa"||!dadosProntos||!empresasCadastro.length||reconciliacaoFiscalRef.current)return;
+    reconciliacaoFiscalRef.current=true;
+    const nomes=Object.fromEntries(empresasCadastro.map(empresa=>[String(empresa.cnpj||"").replace(/\D/g,""),empresa.razao_social||empresa.nome_fantasia||""]));
+    listarIdentidadesDocumentosFiscais().then(documentos=>{
+      setArquivo(atual=>{
+        const resultado=ArquivoFiscalService.reconciliarComDocumentos(atual,documentos,nomes);
+        return resultado.alterado?resultado.dados:atual;
+      });
+      setHistorico(atual=>{
+        const resultado=HistoricoImportacaoService.reconciliarComDocumentos(atual,documentos,nomes);
+        return resultado.alterado?resultado.dados:atual;
+      });
+    }).catch(e=>{
+      reconciliacaoFiscalRef.current=false;
+      setErroPersistencia(`Não foi possível reconciliar os registros fiscais com os XMLs: ${e?.message||e}`);
+    });
+  },[nuvemFiscal,dadosProntos,empresasCadastro]);
   const atualizarPendenciasXml=useCallback(async()=>setPendenciasXml(await listarPendenciasXml()),[]);
   useEffect(()=>{
     if(nuvemFiscal!=="ativa")return;
@@ -3792,7 +3822,7 @@ export default function App(){
 
       {painelPendencias&&<div style={{position:"fixed",right:18,top:68,zIndex:1000,width:"min(430px,calc(100vw - 36px))",maxHeight:"70vh",overflow:"auto",...S.card,boxShadow:"0 20px 55px rgba(0,0,0,.45)"}}>
         <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center"}}><div style={S.cardTitle}>Pendências por empresa</div><button style={S.btn("ghost")} onClick={()=>setPainelPendencias(false)}>Fechar</button></div>
-        {!pendenciasXml.empresas.length?<div style={{color:C.muted,padding:"18px 0"}}>Nenhuma pendência de XML.</div>:pendenciasXml.empresas.map(item=><button key={item.cnpj} onClick={()=>{if(item.cnpj!=="SEM_EMPRESA")setEmpresaContexto(item.cnpj);setAuditoriaAberta(true);setPainelPendencias(false);}} style={{...S.histItem(false),width:"100%",textAlign:"left",cursor:"pointer",marginTop:6}}><strong>{item.nome}</strong><div style={{color:C.muted,fontSize:10,marginTop:3}}>{item.total} pendência(s) · {item.falhas} falha(s)</div></button>)}
+        {!pendenciasXml.empresas.length?<div style={{color:C.muted,padding:"18px 0"}}>Nenhuma pendência de XML.</div>:pendenciasXml.empresas.map(item=><button key={item.cnpj} onClick={()=>{if(item.cnpj!=="SEM_EMPRESA")setEmpresaContexto(item.cnpj);setAuditoriaAberta(true);setPainelPendencias(false);}} style={{...S.histItem(false),width:"100%",textAlign:"left",cursor:"pointer",marginTop:6}}><strong>{item.nome}</strong><div style={{color:C.muted,fontSize:10,marginTop:3}}>{item.total} pendência(s) · {item.emTentativa||0} em tentativa · {item.falhas} falha(s) definitiva(s)</div></button>)}
         <div style={{display:"flex",justifyContent:"flex-end",marginTop:10}}><button style={S.btn("primary")} onClick={()=>{setAuditoriaAberta(true);setPainelPendencias(false);}}>Abrir auditoria</button></div>
       </div>}
 

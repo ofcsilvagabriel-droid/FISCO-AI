@@ -76,6 +76,27 @@ export const listarDocumentosPendentesProcessamento = createServerFn({ method: "
     return data || [];
   });
 
+export const listarIdentidadesDocumentosFiscais = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const documentos = [];
+    for (let pagina = 0; ; pagina += 1) {
+      const inicio = pagina * 1000;
+      const { data, error } = await (supabaseAdmin as any)
+        .from("fiscoai_dfe_documentos")
+        .select("chave_acesso,cnpj,data_emissao,uf_destino")
+        .eq("user_id", context.userId)
+        .eq("tipo_conteudo", "XML_COMPLETO")
+        .order("recebido_em", { ascending: false })
+        .range(inicio, inicio + 999);
+      if (error) throw new Error(error.message);
+      documentos.push(...(data || []));
+      if (!data || data.length < 1000) break;
+    }
+    return documentos;
+  });
+
 export const marcarDocumentosFiscais = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .validator((entrada: unknown) => processamentoInput.parse(entrada))

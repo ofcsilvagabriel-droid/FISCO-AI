@@ -22,6 +22,13 @@ const STATUS = {
   XML_INCOMPLETO: "XML incompleto",
   NAO_ENCONTRADA: "Não encontrada",
 };
+const mensagemOperacional = (mensagem) => {
+  const texto = String(mensagem || "");
+  if (/api\/v1\/danfe|notas? antigas?|m[eê]s corrente/i.test(texto)) {
+    return "Esta NF-e não está disponível automaticamente no provedor. Importe o XML pela área “Importar NF-e”.";
+  }
+  return texto;
+};
 
 export default function PainelAuditoriaRecuperacao({ S, C, onClose }) {
   const [dados, setDados] = useState({ lotes: [], itens: [], indicadores: {} });
@@ -98,6 +105,7 @@ export default function PainelAuditoriaRecuperacao({ S, C, onClose }) {
         {[
           ["Auditadas", dados.indicadores.total || 0],
           ["Aguardando empresa", dados.indicadores.aguardandoIdentificacao || 0],
+          ["Em andamento", dados.indicadores.emAndamento || 0],
           ["Recuperadas", dados.indicadores.recuperadas || 0],
           ["Com falha", dados.indicadores.falhas || 0],
         ].map(([titulo, valor]) => (
@@ -136,7 +144,7 @@ export default function PainelAuditoriaRecuperacao({ S, C, onClose }) {
                     </div>
                   </td>
                   <td>
-                    {item.empresa_cnpj
+                    {item.identificacao_origem === "XML_CONFIRMADO" && item.empresa_cnpj
                       ? `${cnpj(item.empresa_cnpj)} · XML confirmado`
                       : item.destinatario_cnpj_informado
                         ? `${cnpj(item.destinatario_cnpj_informado)} · indicado`
@@ -156,7 +164,7 @@ export default function PainelAuditoriaRecuperacao({ S, C, onClose }) {
                     </span>
                     {item.ultimo_erro && (
                       <div style={{ color: "#fca5a5", fontSize: 10, marginTop: 3, maxWidth: 420 }}>
-                        {item.ultimo_erro}
+                        {mensagemOperacional(item.ultimo_erro)}
                       </div>
                     )}
                   </td>

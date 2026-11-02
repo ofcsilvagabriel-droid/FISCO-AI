@@ -18,8 +18,8 @@ function xmlEntrada(ufOrigem: string, ufDestino: string, cnpjDestino = "12345678
 }
 
 describe("validação do XML de entrada", () => {
-  it("aceita NF-e interestadual destinada a estabelecimento da mesma raiz", () => {
-    expect(validarXmlNfeCompleta(xmlEntrada("SP", "BA"), "12345678000195")).toMatchObject({
+  it("aceita NF-e interestadual somente para o CNPJ destinatário exato", () => {
+    expect(validarXmlNfeCompleta(xmlEntrada("SP", "BA"), "12345678000276")).toMatchObject({
       uf_origem: "SP",
       uf_destino: "BA",
       valor_total_xml: "100.00",
@@ -27,20 +27,21 @@ describe("validação do XML de entrada", () => {
   });
 
   it("aceita NF-e interna para arquivamento sem cálculo interestadual", () => {
-    expect(validarXmlNfeCompleta(xmlEntrada("BA", "BA"), "12345678000195")).toMatchObject({
+    expect(validarXmlNfeCompleta(xmlEntrada("BA", "BA"), "12345678000276")).toMatchObject({
       uf_origem: "BA",
       uf_destino: "BA",
     });
   });
 
-  it("rejeita documento sem protocolo ou destinado a outra raiz de CNPJ", () => {
+  it("rejeita documento sem protocolo, de outra raiz ou de outra filial", () => {
     expect(() =>
       validarXmlNfeCompleta(xmlEntrada("SP", "BA", "87654321000100"), "12345678000195"),
     ).toThrow();
+    expect(() => validarXmlNfeCompleta(xmlEntrada("SP", "BA"), "12345678000195")).toThrow();
     const semProtocolo = Buffer.from(
       xmlEntrada("SP", "BA").toString().replace("<nProt>123</nProt>", ""),
     );
-    expect(() => validarXmlNfeCompleta(semProtocolo, "12345678000195")).toThrow();
+    expect(() => validarXmlNfeCompleta(semProtocolo, "12345678000276")).toThrow();
   });
 
   it("identifica o CNPJ destinatário sem depender da empresa ativa", () => {

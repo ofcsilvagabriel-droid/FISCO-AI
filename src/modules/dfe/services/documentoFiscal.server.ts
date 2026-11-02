@@ -16,7 +16,6 @@ const primeiro = (raiz: Element | Document, nome: string) =>
 const texto = (raiz: Element | Document, nome: string) =>
   primeiro(raiz, nome)?.textContent?.trim() || "";
 const digitos = (valor: unknown) => String(valor || "").replace(/\D/g, "");
-const baseCnpj = (valor: unknown) => digitos(valor).slice(0, 8);
 
 export type DetalhesNfeEntrada = {
   chave_acesso: string;
@@ -94,10 +93,11 @@ export function validarXmlNfeCompleta(xml: Buffer, cnpjEmpresa: string): Detalhe
   const ufEmitente = texto(enderecoEmit || emit || doc, "UF").toUpperCase();
   const ufDestinatario = texto(enderecoDest || dest || doc, "UF").toUpperCase();
   const dataEmissao = texto(ide || doc, "dhEmi") || texto(ide || doc, "dEmi");
+  const cnpjEmpresaNormalizado = digitos(cnpjEmpresa);
   if (
     texto(ide || doc, "mod") !== MODELO_NFE ||
-    !baseCnpj(cnpjDestinatario) ||
-    baseCnpj(cnpjDestinatario) !== baseCnpj(cnpjEmpresa) ||
+    !/^\d{14}$/.test(cnpjDestinatario) ||
+    cnpjDestinatario !== cnpjEmpresaNormalizado ||
     cnpjEmitente === cnpjDestinatario ||
     !/^[A-Z]{2}$/.test(ufEmitente) ||
     !/^[A-Z]{2}$/.test(ufDestinatario)

@@ -16,6 +16,7 @@ const itemEntrada = z.object({
   dataEmissao: z.string().trim().max(40).optional().nullable(),
   linha: z.number().int().positive().optional().nullable(),
 });
+type ItemEntrada = z.infer<typeof itemEntrada>;
 
 const criarLoteInput = z
   .object({
@@ -46,7 +47,8 @@ export const criarLoteRecuperacaoXml = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const db = supabaseAdmin as any;
-    const itensEntrada = data.itens || (data.chaves || []).map((chave) => ({ chave }));
+    const itensEntrada: ItemEntrada[] =
+      data.itens || (data.chaves || []).map((chave) => ({ chave }));
     const chaves = [...new Set(itensEntrada.map((item) => item.chave.trim()))];
     const invalidas = chaves.filter((chave) => !chaveNfeValida(chave));
     if (invalidas.length) {
@@ -189,7 +191,15 @@ export const listarImportacoesPlanilhas = createServerFn({ method: "GET" })
       .order("criado_em", { ascending: false })
       .limit(50);
     if (error) throw new Error(error.message);
-    return data || [];
+    return (data || []).map((lote: any) => ({
+      ...lote,
+      total_pendentes: Math.max(
+        0,
+        Number(lote.total_itens || 0) -
+          Number(lote.total_recuperados || 0) -
+          Number(lote.total_falhas || 0),
+      ),
+    }));
   });
 
 export const listarPendenciasXml = createServerFn({ method: "GET" })
@@ -238,19 +248,14 @@ export const listarPendenciasXml = createServerFn({ method: "GET" })
           nome: nomes.get(cnpj) || (cnpj === "SEM_EMPRESA" ? "Aguardando identificação" : cnpj),
           total: 0,
           falhas: 0,
+          emTentativa: 0,
         });
       const resumo = porEmpresa.get(cnpj);
       resumo.total += 1;
-      if (
-        [
-          "NAO_ENCONTRADA",
-          "XML_INCOMPLETO",
-          "PROVEDOR_INDISPONIVEL",
-          "BLOQUEADA",
-          "FALHA_DEFINITIVA",
-        ].includes(item.status)
-      )
+      if (["NAO_ENCONTRADA", "XML_INCOMPLETO", "FALHA_DEFINITIVA"].includes(item.status))
         resumo.falhas += 1;
+      else if (["NA_FILA", "CONSULTANDO", "PROVEDOR_INDISPONIVEL", "BLOQUEADA"].includes(item.status))
+        resumo.emTentativa += 1;
     }
     const abertas = notificacoes.data || [];
     return {
@@ -298,7 +303,7 @@ export const listarCaixaEntradaFiscal = createServerFn({ method: "GET" })
         .eq("user_id", context.userId)
         .in("cnpj", cnpjsPendentes);
       if (empresasErro) throw new Error(empresasErro.message);
-      const porCnpj = new Map(
+      const porCnpj = new Map<string, any>(
         (empresasPendentes || []).map((empresa: any) => [empresa.cnpj, empresa]),
       );
       await Promise.all(
@@ -321,7 +326,7 @@ export const listarCaixaEntradaFiscal = createServerFn({ method: "GET" })
         }),
       );
     }
-    const [lotes, itens, total, aguardando, identificadas, recuperadas, falhas] = await Promise.all(
+    const [lotes, itens, total, aguardando, identificadas, recuperadas, falhas, emAndamento] = await Promise.all(
       [
         db
           .from("fiscoai_xml_lotes")
@@ -347,14 +352,7 @@ export const listarCaixaEntradaFiscal = createServerFn({ method: "GET" })
           .from("fiscoai_xml_itens")
           .select("id", { count: "exact", head: true })
           .eq("user_id", context.userId)
-          .is("empresa_cnpj", null)
-          .in("status", [
-            "NA_FILA",
-            "CONSULTANDO",
-            "PROVEDOR_INDISPONIVEL",
-            "BLOQUEADA",
-            "AGUARDANDO_EMPRESA",
-          ]),
+          .eq("status", "AGUARDANDO_EMPRESA"),
         db
           .from("fiscoai_xml_itens")
           .select("id", { count: "exact", head: true })
@@ -370,9 +368,21 @@ export const listarCaixaEntradaFiscal = createServerFn({ method: "GET" })
           .select("id", { count: "exact", head: true })
           .eq("user_id", context.userId)
           .in("status", ["NAO_ENCONTRADA", "XML_INCOMPLETO", "FALHA_DEFINITIVA"]),
+        db
+          .from("fiscoai_xml_itens")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", context.userId)
+          .in("status", [
+            "NA_FILA",
+            "CONSULTANDO",
+            "BAIXADA",
+            "VALIDANDO_XML",
+            "PROVEDOR_INDISPONIVEL",
+            "BLOQUEADA",
+          ]),
       ],
     );
-    const erro = [lotes, itens, total, aguardando, identificadas, recuperadas, falhas].find(
+    const erro = [lotes, itens, total, aguardando, identificadas, recuperadas, falhas, emAndamento].find(
       (resultado) => resultado.error,
     )?.error;
     if (erro) throw new Error(erro.message);
@@ -385,6 +395,7 @@ export const listarCaixaEntradaFiscal = createServerFn({ method: "GET" })
         identificadas: identificadas.count || 0,
         recuperadas: recuperadas.count || 0,
         falhas: falhas.count || 0,
+        emAndamento: emAndamento.count || 0,
       },
     };
   });

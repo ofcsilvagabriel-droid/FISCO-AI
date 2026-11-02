@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listarEmpresasFisco } from "@/modules/empresas/empresas.functions";
 import {
   baixarDocumentoFiscal,
@@ -23,7 +23,9 @@ export default function PainelDfe({ S, C, empresaInicial = "", empresaFixa = fal
   const [competencia, setCompetencia] = useState(competenciaAtual);
   const [uf, setUf] = useState("");
   const [indice, setIndice] = useState({ indice: {}, total: 0 });
-  const [dados, setDados] = useState({ documentos: [], indicadores: {} });
+  const [dados, setDados] = useState({ documentos: [], indicadores: {}, cnpj: "", competencia: "" });
+  const [carregando, setCarregando] = useState(false);
+  const requisicaoRef = useRef(0);
   const [ocupado, setOcupado] = useState("");
   const [erro, setErro] = useState("");
   const [aviso, setAviso] = useState("");
@@ -37,8 +39,11 @@ export default function PainelDfe({ S, C, empresaInicial = "", empresaFixa = fal
     [indice, competencia],
   );
   const documentos = useMemo(
-    () => (uf ? dados.documentos.filter((item) => item.uf_origem === uf) : dados.documentos),
-    [dados.documentos, uf],
+    () => {
+      if (dados.cnpj !== selecionada || dados.competencia !== competencia) return [];
+      return uf ? dados.documentos.filter((item) => item.uf_origem === uf) : dados.documentos;
+    },
+    [dados, selecionada, competencia, uf],
   );
 
   const carregarEmpresas = useCallback(async () => {
@@ -48,12 +53,29 @@ export default function PainelDfe({ S, C, empresaInicial = "", empresaFixa = fal
   }, [empresaInicial]);
   const carregarAcervo = useCallback(async () => {
     if (!selecionada) return;
-    const [arvore, documentosCompetencia] = await Promise.all([
-      listarIndiceAcervoXml({ data: { cnpj: selecionada } }),
-      listarCentralXml({ data: { cnpj: selecionada, competencia } }),
-    ]);
-    setIndice(arvore);
-    setDados(documentosCompetencia);
+    const requisicao = ++requisicaoRef.current;
+    setCarregando(true);
+    setErro("");
+    try {
+      const arvore = await listarIndiceAcervoXml({ data: { cnpj: selecionada } });
+      if (requisicao !== requisicaoRef.current) return;
+      const competencias = Object.keys(arvore.indice || {}).sort().reverse();
+      const competenciaAlvo = competencias.includes(competencia)
+        ? competencia
+        : competencias[0] || competenciaAtual();
+      const documentosCompetencia = await listarCentralXml({
+        data: { cnpj: selecionada, competencia: competenciaAlvo },
+      });
+      if (requisicao !== requisicaoRef.current) return;
+      setIndice(arvore);
+      setDados({ ...documentosCompetencia, cnpj: selecionada, competencia: competenciaAlvo });
+      if (competenciaAlvo !== competencia) setCompetencia(competenciaAlvo);
+      setUf((atual) =>
+        atual && !Object.keys(arvore.indice?.[competenciaAlvo] || {}).includes(atual) ? "" : atual,
+      );
+    } finally {
+      if (requisicao === requisicaoRef.current) setCarregando(false);
+    }
   }, [selecionada, competencia]);
   useEffect(() => {
     carregarEmpresas().catch((e) => setErro(erroTexto(e)));
@@ -183,8 +205,11 @@ export default function PainelDfe({ S, C, empresaInicial = "", empresaFixa = fal
             <select
               value={selecionada}
               onChange={(e) => {
+                requisicaoRef.current += 1;
                 setSelecionada(e.target.value);
                 setUf("");
+                setIndice({ indice: {}, total: 0 });
+                setDados({ documentos: [], indicadores: {}, cnpj: e.target.value, competencia: "" });
               }}
               style={{ ...S.inp, width: "100%" }}
             >
@@ -221,8 +246,10 @@ export default function PainelDfe({ S, C, empresaInicial = "", empresaFixa = fal
                 <div key={mes} style={{ marginBottom: 9 }}>
                   <button
                     onClick={() => {
+                      requisicaoRef.current += 1;
                       setCompetencia(mes);
                       setUf("");
+                      setDados({ documentos: [], indicadores: {}, cnpj: selecionada, competencia: mes });
                     }}
                     style={{
                       ...S.histItem(competencia === mes && !uf),
@@ -277,7 +304,7 @@ export default function PainelDfe({ S, C, empresaInicial = "", empresaFixa = fal
                   {uf ? ` · ${uf}` : ""}
                 </div>
                 <div style={{ color: C.muted, fontSize: 11 }}>
-                  {documentos.length} documento(s) nesta pasta
+                  {carregando ? "Carregando documentos…" : `${documentos.length} documento(s) nesta pasta`}
                 </div>
               </div>
               <div style={{ display: "flex", gap: 8 }}>
@@ -299,7 +326,9 @@ export default function PainelDfe({ S, C, empresaInicial = "", empresaFixa = fal
                 )}
               </div>
             </div>
-            {!documentos.length ? (
+            {carregando ? (
+              <div role="status" style={{ color: C.muted, padding: "24px 0" }}>Carregando XMLs da pasta…</div>
+            ) : !documentos.length ? (
               <div style={{ color: C.muted, padding: "24px 0" }}>Nenhum XML nesta pasta.</div>
             ) : (
               <div style={{ display: "grid", marginTop: 10 }}>

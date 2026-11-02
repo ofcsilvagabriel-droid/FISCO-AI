@@ -47,7 +47,7 @@ describe("consistência de alíquota e ICMS próprio por item", () => {
   });
 
   it.each(["ICMS_ST", "ANTECIPACAO", "DIFAL"])("atualiza o consolidado da nota sem duplicá-la após salvar cálculo %s", tributacao => {
-    const nota = { chave: "NFeTESTE", numero: "1", data_emissao: "2026-10-25", destinatario_cnpj: "EMPRESA_TESTE", totais_xml: { valor_total: 1090 } };
+    const nota = { chave: "NFeTESTE", numero: "1", data_emissao: "2026-10-25", destinatario_cnpj: "12345678000195", totais_xml: { valor_total: 1090 } };
     const produto = item({ xml: { aliquota_icms: 4, valor_icms: 34, base_icms: 850 } });
     const anterior = { tributacao, valor_icms_proprio: 34, valor_icms_st: 20, valor_difal: 10, valor_icms_total: 64 };
     const editado = { ...anterior, valor_icms_st: 40, valor_difal: 15, valor_icms_total: 89 };

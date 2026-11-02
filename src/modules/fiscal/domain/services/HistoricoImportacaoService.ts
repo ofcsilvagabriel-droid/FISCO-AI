@@ -8,6 +8,55 @@ type EntradaHistorico = {
   xml?: unknown;
 };
 
+type IdentidadeDocumentoFiscal = {
+  chave_acesso?: unknown;
+  cnpj?: unknown;
+  data_emissao?: unknown;
+  uf_destino?: unknown;
+};
+
+const digitos = (valor: unknown) => String(valor ?? "").replace(/\D/g, "");
+
+export function reconciliarHistoricoComDocumentos<T extends EntradaHistorico>(
+  historico: T[],
+  documentos: IdentidadeDocumentoFiscal[],
+  nomesEmpresas: Record<string, string> = {},
+): { dados: T[]; alterado: boolean } {
+  const porChave = new Map(
+    (documentos || [])
+      .map(documento => [digitos(documento.chave_acesso), documento] as const)
+      .filter(([chave, documento]) => chave.length === 44 && /^\d{14}$/.test(digitos(documento.cnpj))),
+  );
+  let alterado = false;
+  const dados = (historico || []).map(entrada => {
+    const chave = digitos(entrada?.nota?.chave ?? entrada?.nota?.chave_acesso);
+    const documento = chave.length === 44 ? porChave.get(chave) : null;
+    if (!documento) return entrada;
+    const cnpj = digitos(documento.cnpj);
+    const nome = nomesEmpresas[cnpj] || String(entrada.nota?.destinatario_nome || "");
+    const dataEmissao = String(documento.data_emissao || entrada.nota?.data_emissao || "");
+    const ufDestino = String(documento.uf_destino || entrada.nota?.uf_destino || "");
+    if (
+      digitos(entrada.nota?.destinatario_cnpj) === cnpj &&
+      entrada.nota?.destinatario_nome === nome &&
+      entrada.nota?.data_emissao === dataEmissao &&
+      entrada.nota?.uf_destino === ufDestino
+    ) return entrada;
+    alterado = true;
+    return {
+      ...entrada,
+      nota: {
+        ...entrada.nota,
+        destinatario_cnpj: cnpj,
+        destinatario_nome: nome,
+        data_emissao: dataEmissao,
+        uf_destino: ufDestino,
+      },
+    } as T;
+  });
+  return { dados: alterado ? dados : historico, alterado };
+}
+
 export function identidadeImportacao(entrada: EntradaHistorico): string | null {
   const nota = entrada?.nota || {};
   const chave = String(nota.chave ?? nota.chave_acesso ?? "").replace(/\D/g, "");
@@ -52,4 +101,5 @@ export const HistoricoImportacaoService = {
   save(dados: EntradaHistorico[]): Promise<void> {
     return salvarFiscal("historico-importacao", HISTORICO_KEY, mesclarHistorico(dados, []));
   },
+  reconciliarComDocumentos: reconciliarHistoricoComDocumentos,
 };
