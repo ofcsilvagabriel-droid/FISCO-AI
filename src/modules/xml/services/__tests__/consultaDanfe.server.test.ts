@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { consultarXmlConsultaDanfe, ErroConsultaDanfe } from "../consultaDanfe.server";
+import {
+  consultarXmlConsultaDanfe,
+  ErroConsultaDanfe,
+  normalizarXmlConsultaDanfe,
+} from "../consultaDanfe.server";
 
 describe("consultarXmlConsultaDanfe", () => {
   it("decodifica o XML devolvido em base64", async () => {
@@ -13,6 +17,18 @@ describe("consultarXmlConsultaDanfe", () => {
 
     await expect(consultarXmlConsultaDanfe("1".repeat(44), fetcher)).resolves.toBe(xml);
     expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("normaliza a serialização reconstruída pelo provedor", () => {
+    const reconstruido =
+      '<?xml version="1.0" encoding="utf-8"?>\n' +
+      '<nfeProc versao="4.00"><NFe><infNFe Id="NFe123"><infAdic><infCpl>alinea "a"</infCpl></infAdic></infNFe></NFe><versao>4.00</versao></nfeProc>';
+    const esperado =
+      '<?xml version="1.0" encoding="UTF-8"?>' +
+      '<nfeProc versao="4.00"><NFe><infNFe Id="NFe123" versao="4.00"><infAdic><infCpl>alinea &quot;a&quot;</infCpl></infAdic></infNFe></NFe><versao>4.00</versao></nfeProc>';
+
+    expect(normalizarXmlConsultaDanfe(reconstruido)).toBe(esperado);
+    expect(normalizarXmlConsultaDanfe(esperado)).toBe(esperado);
   });
 
   it("trata limite HTTP 429 como falha repetível", async () => {

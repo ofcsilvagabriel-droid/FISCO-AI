@@ -211,7 +211,7 @@ export const baixarDocumentosFiscaisEmLote = createServerFn({ method: "POST" })
 async function carregarXmlDocumentoFiscal(db: any, userId: string, id: string) {
   const { data: documento, error } = await db
     .from("fiscoai_dfe_documentos")
-    .select("id,cnpj,tipo_conteudo,chave_acesso,storage_path,sha256")
+    .select("id,cnpj,tipo_conteudo,chave_acesso,storage_path,sha256,origem")
     .eq("id", id)
     .eq("user_id", userId)
     .single();
@@ -231,10 +231,17 @@ async function carregarXmlDocumentoFiscal(db: any, userId: string, id: string) {
   if (createHash("sha256").update(bytes).digest("hex") !== documento.sha256) {
     throw new Error("Integridade do XML comprometida.");
   }
+  let xml = bytes.toString("utf8");
+  if (documento.origem === "API_PROPRIA") {
+    const { normalizarXmlConsultaDanfe } = await import(
+      "@/modules/xml/services/consultaDanfe.server"
+    );
+    xml = normalizarXmlConsultaDanfe(xml);
+  }
   return {
     id: documento.id,
     cnpj: documento.cnpj,
     chave_acesso: documento.chave_acesso,
-    xml: bytes.toString("utf8"),
+    xml,
   };
 }

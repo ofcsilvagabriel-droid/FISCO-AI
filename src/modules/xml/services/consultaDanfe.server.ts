@@ -2,6 +2,25 @@ const CONSULTA_DANFE_URL = "https://consultadanfe.com/api/v1/consulta";
 const LIMITE_XML = 10 * 1024 * 1024;
 const TIMEOUT_MS = 7_000;
 
+export function normalizarXmlConsultaDanfe(xml: string) {
+  const versao =
+    xml.match(/<nfeProc\b[^>]*\bversao=["']([^"']+)["']/i)?.[1] ||
+    xml.match(/<versao>([^<]+)<\/versao>/i)?.[1];
+  let normalizado = xml.replace(
+    /(<\?xml\b[^>]*\bencoding\s*=\s*["'])utf-8(["'][^>]*\?>)/i,
+    "$1UTF-8$2",
+  );
+  if (versao) {
+    normalizado = normalizado.replace(/<infNFe\b[^>]*>/i, (tag) =>
+      /\bversao\s*=/i.test(tag) ? tag : tag.replace(/>$/, ` versao="${versao}">`),
+    );
+  }
+  normalizado = normalizado.replace(/>([^<]*)</g, (_, texto: string) =>
+    `>${texto.replace(/"/g, "&quot;")}<`,
+  );
+  return normalizado.replace(/(<\?xml\b[^>]*\?>)\s+(<nfeProc\b)/i, "$1$2");
+}
+
 export class ErroConsultaDanfe extends Error {
   constructor(
     message: string,
