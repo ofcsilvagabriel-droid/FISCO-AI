@@ -30,20 +30,22 @@ export default function PainelDfe({ S, C, empresaInicial = "", empresaFixa = fal
   const [erro, setErro] = useState("");
   const [aviso, setAviso] = useState("");
   const [progresso, setProgresso] = useState(0);
-  const empresa = useMemo(
-    () => empresas.find((item) => item.cnpj === selecionada),
-    [empresas, selecionada],
+  const contextoCarregado = dados.cnpj === selecionada && !!dados.competencia;
+  const competenciaExibida = contextoCarregado ? dados.competencia : competencia;
+  const empresaExibida = useMemo(
+    () => empresas.find((item) => item.cnpj === (contextoCarregado ? dados.cnpj : selecionada)),
+    [empresas, contextoCarregado, dados.cnpj, selecionada],
   );
   const ufs = useMemo(
-    () => Object.keys(indice.indice?.[competencia] || {}).sort(),
-    [indice, competencia],
+    () => Object.keys(indice.indice?.[competenciaExibida] || {}).sort(),
+    [indice, competenciaExibida],
   );
   const documentos = useMemo(
     () => {
-      if (dados.cnpj !== selecionada || dados.competencia !== competencia) return [];
+      if (!contextoCarregado) return [];
       return uf ? dados.documentos.filter((item) => item.uf_origem === uf) : dados.documentos;
     },
-    [dados, selecionada, competencia, uf],
+    [dados, contextoCarregado, uf],
   );
 
   const carregarEmpresas = useCallback(async () => {
@@ -120,7 +122,7 @@ export default function PainelDfe({ S, C, empresaInicial = "", empresaFixa = fal
         const resultado = await listarDocumentosFiscaisParaExportacao({
           data: {
             cnpj: selecionada,
-            competencia: escopo === "empresa" ? null : competencia,
+            competencia: escopo === "empresa" ? null : competenciaExibida,
             uf: escopo === "uf" ? uf : null,
             pagina,
             limite: 200,
@@ -148,7 +150,7 @@ export default function PainelDfe({ S, C, empresaInicial = "", empresaFixa = fal
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `FiscoAI-XML-${selecionada}-${escopo === "empresa" ? "acervo-completo" : competencia}${escopo === "uf" ? `-${uf}` : ""}.zip`;
+      link.download = `FiscoAI-XML-${selecionada}-${escopo === "empresa" ? "acervo-completo" : competenciaExibida}${escopo === "uf" ? `-${uf}` : ""}.zip`;
       link.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
       setAviso(`${encontrados.length} XML(s) exportado(s).`);
@@ -221,9 +223,9 @@ export default function PainelDfe({ S, C, empresaInicial = "", empresaFixa = fal
               ))}
             </select>
           </label>
-          {empresa && (
-            <div style={{ color: C.muted, fontSize: 11 }}>
-              {empresa.razao_social} · {indice.total} XML(s) no acervo
+          {empresaExibida && (
+            <div key={`${dados.cnpj}:${indice.total}`} style={{ color: C.muted, fontSize: 11 }}>
+              {empresaExibida.razao_social} · {indice.total} XML(s) no acervo
             </div>
           )}
         </section>
@@ -252,7 +254,7 @@ export default function PainelDfe({ S, C, empresaInicial = "", empresaFixa = fal
                       setDados({ documentos: [], indicadores: {}, cnpj: selecionada, competencia: mes });
                     }}
                     style={{
-                      ...S.histItem(competencia === mes && !uf),
+                      ...S.histItem(competenciaExibida === mes && !uf),
                       width: "100%",
                       textAlign: "left",
                       cursor: "pointer",
@@ -263,7 +265,7 @@ export default function PainelDfe({ S, C, empresaInicial = "", empresaFixa = fal
                       ({Object.values(porUf).reduce((a, b) => a + b, 0)})
                     </span>
                   </button>
-                  {competencia === mes && (
+                  {competenciaExibida === mes && (
                     <div style={{ paddingLeft: 14 }}>
                       {Object.entries(porUf)
                         .sort()
@@ -299,8 +301,8 @@ export default function PainelDfe({ S, C, empresaInicial = "", empresaFixa = fal
               }}
             >
               <div>
-                <div style={S.cardTitle}>
-                  {mesLabel(competencia)}
+                <div key={`${dados.cnpj}:${competenciaExibida}:${uf}`} style={S.cardTitle}>
+                  {mesLabel(competenciaExibida)}
                   {uf ? ` · ${uf}` : ""}
                 </div>
                 <div style={{ color: C.muted, fontSize: 11 }}>
