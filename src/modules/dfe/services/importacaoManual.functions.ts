@@ -20,12 +20,14 @@ export const importarXmlManualNoHub = createServerFn({ method: "POST" })
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { identificarDestinatarioXmlNfeCompleta, persistirXmlNfeCompleta } =
       await import("./documentoFiscal.server");
+    const { reconciliarPendenciasComAcervo } =
+      await import("@/modules/xml/services/recuperacaoXml.server");
     const db = supabaseAdmin as any;
     const bytes = Buffer.from(data.xml, "utf8");
     const identificado = identificarDestinatarioXmlNfeCompleta(bytes);
     const { data: empresa, error: empresaErro } = await db
       .from("fiscoai_empresas")
-      .select("cnpj")
+      .select("empresa_id,cnpj")
       .eq("user_id", context.userId)
       .eq("cnpj", identificado.destinatario_cnpj)
       .maybeSingle();
@@ -42,6 +44,10 @@ export const importarXmlManualNoHub = createServerFn({ method: "POST" })
         origem: "IMPORTACAO_MANUAL",
         metadadosOrigem: { identificacao_destinatario: "XML_CONFIRMADO" },
       });
+      const reconciliacao = await reconciliarPendenciasComAcervo(db, {
+        userId: context.userId,
+        chaveAcesso: resultado.detalhes.chave_acesso,
+      });
       await db.from("fiscoai_xml_auditoria").insert({
         user_id: context.userId,
         empresa_cnpj: empresa.cnpj,
@@ -49,11 +55,15 @@ export const importarXmlManualNoHub = createServerFn({ method: "POST" })
         operacao: "IMPORTAR_XML",
         status: "SUCESSO",
         mensagem: resultado.duplicado ? "NF-e já existente no Hub." : "NF-e importada no Hub.",
-        detalhes: { duplicado: resultado.duplicado },
+        detalhes: {
+          duplicado: resultado.duplicado,
+          pendencias_resolvidas: reconciliacao.itensResolvidos,
+          lotes_atualizados: reconciliacao.lotesAtualizados,
+        },
         criado_em: iniciadaEm,
         finalizado_em: new Date().toISOString(),
       });
-      return { ...resultado, empresaCnpj: empresa.cnpj };
+      return { ...resultado, empresaCnpj: empresa.cnpj, reconciliacao };
     } catch (erro) {
       const mensagem = String(erro instanceof Error ? erro.message : erro).slice(0, 500);
       await db.from("fiscoai_xml_auditoria").insert({

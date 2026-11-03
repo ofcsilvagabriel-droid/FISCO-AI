@@ -207,6 +207,8 @@ export const listarPendenciasXml = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const db = supabaseAdmin as any;
+    const { reconciliarPendenciasComAcervo } = await import("./recuperacaoXml.server");
+    await reconciliarPendenciasComAcervo(db, { userId: context.userId });
     const [itens, empresas, notificacoes] = await Promise.all([
       db
         .from("fiscoai_xml_itens")

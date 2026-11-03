@@ -3,6 +3,86 @@ import { randomUUID } from "node:crypto";
 
 const MAX_ITENS = 50;
 const TENTATIVAS_POR_CICLO = 5;
+const STATUS_XML_RESOLVIDO = ["ARMAZENADA", "IMPORTADA", "DUPLICADA"];
+
+export async function reconciliarPendenciasComAcervo(
+  db: any,
+  entrada: { userId: string; chaveAcesso?: string },
+) {
+  let consultaItens = db
+    .from("fiscoai_xml_itens")
+    .select("id,lote_id,chave_acesso,status")
+    .eq("user_id", entrada.userId)
+    .not("status", "in", `(${STATUS_XML_RESOLVIDO.map((status) => `"${status}"`).join(",")})`)
+    .limit(500);
+  if (entrada.chaveAcesso) consultaItens = consultaItens.eq("chave_acesso", entrada.chaveAcesso);
+  const { data: itens, error: itensErro } = await consultaItens;
+  if (itensErro) throw new Error(`Falha ao localizar pendências da NF-e: ${itensErro.message}`);
+  if (!itens?.length) return { itensResolvidos: 0, lotesAtualizados: 0 };
+
+  const chaves = [...new Set(itens.map((item: any) => item.chave_acesso))];
+  const { data: documentos, error: documentosErro } = await db
+    .from("fiscoai_dfe_documentos")
+    .select("id,cnpj,chave_acesso,processamento_status")
+    .eq("user_id", entrada.userId)
+    .eq("tipo_conteudo", "XML_COMPLETO")
+    .in("chave_acesso", chaves);
+  if (documentosErro) throw new Error(`Falha ao conferir o acervo de XMLs: ${documentosErro.message}`);
+  if (!documentos?.length) return { itensResolvidos: 0, lotesAtualizados: 0 };
+
+  const cnpjs = [...new Set(documentos.map((documento: any) => documento.cnpj))];
+  const { data: empresas, error: empresasErro } = await db
+    .from("fiscoai_empresas")
+    .select("empresa_id,cnpj")
+    .eq("user_id", entrada.userId)
+    .in("cnpj", cnpjs);
+  if (empresasErro) throw new Error(`Falha ao identificar a empresa do XML: ${empresasErro.message}`);
+  const empresaPorCnpj = new Map((empresas || []).map((empresa: any) => [empresa.cnpj, empresa]));
+  const lotes = new Set<string>();
+  let itensResolvidos = 0;
+  const agora = new Date().toISOString();
+
+  for (const documento of documentos) {
+    const empresa = empresaPorCnpj.get(documento.cnpj) as any;
+    if (!empresa) continue;
+    const correspondentes = itens.filter((item: any) => item.chave_acesso === documento.chave_acesso);
+    const ids = correspondentes.map((item: any) => item.id);
+    if (!ids.length) continue;
+    const status = ["importada", "interna"].includes(documento.processamento_status)
+      ? "IMPORTADA"
+      : "ARMAZENADA";
+    const { error: atualizacaoErro } = await db
+      .from("fiscoai_xml_itens")
+      .update({
+        empresa_id: empresa.empresa_id,
+        empresa_cnpj: documento.cnpj,
+        destinatario_cnpj_informado: documento.cnpj,
+        identificacao_origem: "XML_CONFIRMADO",
+        documento_id: documento.id,
+        status,
+        lock_token: null,
+        lock_ate: "1970-01-01T00:00:00.000Z",
+        proxima_tentativa_em: null,
+        ultimo_codigo: "XML_RECONCILIADO_COM_ACERVO",
+        ultimo_erro: null,
+        atualizado_em: agora,
+      })
+      .eq("user_id", entrada.userId)
+      .in("id", ids);
+    if (atualizacaoErro) throw new Error(`Falha ao atualizar a pendência da NF-e: ${atualizacaoErro.message}`);
+    const { error: notificacaoErro } = await db
+      .from("fiscoai_xml_notificacoes")
+      .update({ resolvida_em: agora, atualizado_em: agora })
+      .eq("user_id", entrada.userId)
+      .in("item_id", ids)
+      .is("resolvida_em", null);
+    if (notificacaoErro) throw new Error(`Falha ao resolver a notificação da NF-e: ${notificacaoErro.message}`);
+    correspondentes.forEach((item: any) => lotes.add(item.lote_id));
+    itensResolvidos += ids.length;
+  }
+  for (const loteId of lotes) await atualizarTotaisLote(db, loteId);
+  return { itensResolvidos, lotesAtualizados: lotes.size };
+}
 
 export async function reivindicarItensRecuperacao(db: any, limite = 10, userId?: string) {
   const lockToken = randomUUID();
@@ -338,14 +418,14 @@ export async function falharItemRecuperacao(
   return { status, proximaTentativaEm: proxima };
 }
 
-async function atualizarTotaisLote(db: any, loteId: string) {
+export async function atualizarTotaisLote(db: any, loteId: string) {
   const { data: itens, error } = await db
     .from("fiscoai_xml_itens")
     .select("status")
     .eq("lote_id", loteId);
   if (error) throw new Error(error.message);
   const recuperados = (itens || []).filter((item: any) =>
-    ["ARMAZENADA", "IMPORTADA", "DUPLICADA"].includes(item.status),
+    STATUS_XML_RESOLVIDO.includes(item.status),
   ).length;
   const falhas = (itens || []).filter((item: any) => item.status === "FALHA_DEFINITIVA").length;
   const pendentes = (itens || []).length - recuperados - falhas;
