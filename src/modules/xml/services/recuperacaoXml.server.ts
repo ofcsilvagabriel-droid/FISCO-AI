@@ -184,6 +184,19 @@ export async function concluirItemRecuperacao(
     if (identificado.chave_acesso !== item.chave_acesso) {
       throw new Error("O XML devolvido pelo provedor não corresponde à chave reivindicada.");
     }
+    resultado = await persistirXmlNfeCompleta({
+      db,
+      userId: item.user_id,
+      cnpj: identificado.destinatario_cnpj,
+      xml: bytes,
+      origem: "API_PROPRIA",
+      metadadosOrigem: {
+        item_fila_id: item.id,
+        provedor: "WORKER_AUTORIZADO",
+        identificacao_destinatario: "XML_CONFIRMADO",
+        cnpj_planilha: item.destinatario_cnpj_informado || null,
+      },
+    });
     const { data: empresa, error: empresaErro } = await db
       .from("fiscoai_empresas")
       .select("empresa_id,cnpj")
@@ -200,6 +213,7 @@ export async function concluirItemRecuperacao(
           status: "AGUARDANDO_EMPRESA",
           destinatario_cnpj_informado: identificado.destinatario_cnpj,
           identificacao_origem: "XML_CONFIRMADO",
+          documento_id: resultado.documentoId,
           lock_token: null,
           lock_ate: "1970-01-01T00:00:00.000Z",
           proxima_tentativa_em: null,
@@ -214,6 +228,7 @@ export async function concluirItemRecuperacao(
       await db.from("fiscoai_xml_auditoria").insert({
         user_id: item.user_id,
         empresa_cnpj: identificado.destinatario_cnpj,
+        documento_id: resultado.documentoId,
         item_id: item.id,
         operacao: "IDENTIFICAR_DESTINATARIO_XML",
         status: "BLOQUEADA",
@@ -236,10 +251,14 @@ export async function concluirItemRecuperacao(
         { onConflict: "user_id,fingerprint", ignoreDuplicates: true },
       );
       await atualizarTotaisLote(db, item.lote_id);
-      return { aguardandoEmpresa: true, destinatarioCnpj: identificado.destinatario_cnpj };
+      return {
+        aguardandoEmpresa: true,
+        destinatarioCnpj: identificado.destinatario_cnpj,
+        documentoId: resultado.documentoId,
+      };
     }
     empresaConfirmada = empresa;
-    const validado = validarXmlNfeCompleta(bytes, empresa.cnpj);
+    validarXmlNfeCompleta(bytes, empresa.cnpj);
     const { error: identificacaoErro } = await db
       .from("fiscoai_xml_itens")
       .update({
@@ -253,19 +272,6 @@ export async function concluirItemRecuperacao(
       .eq("lock_token", entrada.lockToken);
     if (identificacaoErro)
       throw new Error(`Falha ao vincular a NF-e à empresa correta: ${identificacaoErro.message}`);
-    resultado = await persistirXmlNfeCompleta({
-      db,
-      userId: item.user_id,
-      cnpj: empresa.cnpj,
-      xml: bytes,
-      origem: "API_PROPRIA",
-      metadadosOrigem: {
-        item_fila_id: item.id,
-        provedor: "WORKER_AUTORIZADO",
-        identificacao_destinatario: "XML_CONFIRMADO",
-        cnpj_planilha: item.destinatario_cnpj_informado || null,
-      },
-    });
   } catch (erro) {
     await falharItemRecuperacao(db, {
       itemId: entrada.itemId,

@@ -37,7 +37,7 @@ export default function PainelAuditoriaRecuperacao({ S, C, onClose }) {
   const carregar = useCallback(async () => setDados(await listarCaixaEntradaFiscal()), []);
   useEffect(() => {
     carregar().catch((e) => setErro(erroTexto(e)));
-    const timer = window.setInterval(() => carregar().catch(() => {}), 15000);
+    const timer = window.setInterval(() => carregar().catch(() => {}), 5000);
     return () => window.clearInterval(timer);
   }, [carregar]);
 
