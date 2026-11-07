@@ -101,6 +101,7 @@ export async function reivindicarItensRecuperacao(db: any, limite = 10, userId?:
     itens: (data || []).map((item: any) => ({
       id: item.id,
       loteId: item.lote_id,
+      userId: item.user_id,
       empresaCnpj: item.empresa_cnpj,
       chaveAcesso: item.chave_acesso,
       tentativa: item.tentativas,
@@ -113,20 +114,43 @@ export async function executarWorkerRecuperacao(
   entrada: { limite?: number; userId?: string } = {},
 ) {
   const { consultarXmlConsultaDanfe, ErroConsultaDanfe } = await import("./consultaDanfe.server");
+  const { consultarXmlNfeOrquestrado, ErroConsultaNfeOrquestrada, orquestradorNfeAtivo } =
+    await import("./consultaNfeOrchestrator.server");
+  const usarOrquestrador = orquestradorNfeAtivo();
   const lote = await reivindicarItensRecuperacao(db, entrada.limite || 5, entrada.userId);
   const resultados = await Promise.all(
     lote.itens.map(async (item: any) => {
       let xml: string;
+      let metadadosConsulta:
+        | { provedor: "CONSULTA_DANFE" | "NFE_IO"; provedoresConsultados: string[] }
+        | undefined;
       try {
-        xml = await consultarXmlConsultaDanfe(item.chaveAcesso);
+        if (usarOrquestrador) {
+          const consulta = await consultarXmlNfeOrquestrado(db, {
+            userId: item.userId,
+            itemId: item.id,
+            chave: item.chaveAcesso,
+          });
+          xml = consulta.xml!.toString("utf8");
+          if (!consulta.cacheHit) {
+            metadadosConsulta = {
+              provedor: consulta.provedor,
+              provedoresConsultados: consulta.provedoresConsultados,
+            };
+          }
+        } else {
+          xml = await consultarXmlConsultaDanfe(item.chaveAcesso);
+        }
       } catch (erro) {
-        const conhecido = erro instanceof ErroConsultaDanfe;
+        const conhecido =
+          erro instanceof ErroConsultaDanfe || erro instanceof ErroConsultaNfeOrquestrada;
         const falha = await falharItemRecuperacao(db, {
           itemId: item.id,
           lockToken: lote.lockToken,
           codigo: conhecido ? erro.codigo : "FALHA_PROVEDOR",
           mensagem: erro instanceof Error ? erro.message : "O provedor externo não devolveu o XML.",
           repetivel: conhecido ? erro.repetivel : true,
+          retryAfterMs: erro instanceof ErroConsultaNfeOrquestrada ? erro.retryAfterMs : undefined,
         });
         return { itemId: item.id, resultado: falha.status };
       }
@@ -135,6 +159,7 @@ export async function executarWorkerRecuperacao(
           itemId: item.id,
           lockToken: lote.lockToken,
           xml,
+          ...metadadosConsulta,
         });
         return {
           itemId: item.id,
@@ -158,7 +183,13 @@ export async function executarWorkerRecuperacao(
 
 export async function concluirItemRecuperacao(
   db: any,
-  entrada: { itemId: string; lockToken: string; xml: string },
+  entrada: {
+    itemId: string;
+    lockToken: string;
+    xml: string;
+    provedor?: "CONSULTA_DANFE" | "NFE_IO";
+    provedoresConsultados?: string[];
+  },
 ) {
   const { data: item, error: itemErro } = await db
     .from("fiscoai_xml_itens")
@@ -192,11 +223,26 @@ export async function concluirItemRecuperacao(
       origem: "API_PROPRIA",
       metadadosOrigem: {
         item_fila_id: item.id,
-        provedor: "WORKER_AUTORIZADO",
+        provedor: entrada.provedor || "WORKER_AUTORIZADO",
+        provedores_consultados: entrada.provedoresConsultados || [],
         identificacao_destinatario: "XML_CONFIRMADO",
         cnpj_planilha: item.destinatario_cnpj_informado || null,
       },
     });
+    if (entrada.provedor) {
+      const { error: provedorErro } = await db
+        .from("fiscoai_dfe_documentos")
+        .update({
+          provedor_preferido: entrada.provedor,
+          provedores_consultados: entrada.provedoresConsultados || [entrada.provedor],
+          consultado_em: new Date().toISOString(),
+        })
+        .eq("id", resultado.documentoId)
+        .eq("user_id", item.user_id);
+      if (provedorErro) {
+        throw new Error(`Falha ao registrar o provedor da NF-e: ${provedorErro.message}`);
+      }
+    }
     const { data: empresa, error: empresaErro } = await db
       .from("fiscoai_empresas")
       .select("empresa_id,cnpj")
@@ -347,6 +393,7 @@ export async function falharItemRecuperacao(
     codigo?: string;
     mensagem: string;
     repetivel?: boolean;
+    retryAfterMs?: number;
   },
 ) {
   const { data: item, error } = await db
@@ -365,7 +412,8 @@ export async function falharItemRecuperacao(
       ? 360
       : Math.min(60, 2 ** Math.max(0, Number(item.ciclo_tentativas || 1) - 1))
     : 24 * 60;
-  const proxima = new Date(agora.getTime() + esperaMinutos * 60 * 1000).toISOString();
+  const esperaMs = Math.max(esperaMinutos * 60 * 1000, entrada.retryAfterMs || 0);
+  const proxima = new Date(agora.getTime() + esperaMs).toISOString();
   const status = repetivel ? "PROVEDOR_INDISPONIVEL" : "FALHA_DEFINITIVA";
   const mensagem = entrada.mensagem.slice(0, 500);
   const { error: atualizacaoErro } = await db

@@ -1,6 +1,7 @@
 # NFE.io em modo sombra
 
-Esta integração permanece desativada por padrão e não está conectada ao worker de produção.
+Esta integração permanece desativada por padrão. O worker só usa o orquestrador quando
+`NFE_ORCHESTRATOR_ENABLED=true`; sem essa variável, o fluxo legado continua inalterado.
 
 Variáveis exclusivamente do servidor:
 
@@ -10,6 +11,8 @@ Variáveis exclusivamente do servidor:
 - `NFE_IO_TIMEOUT_MS=20000`
 - `NFE_IO_CLIENT_TIMEOUT_SECONDS=20`
 - `NFE_IO_MAX_CONCURRENCY=2`
+- `NFE_ORCHESTRATOR_ENABLED=false`
+- `NFE_PROVIDER_POLICY=ECONOMIA` (`ECONOMIA`, `RAPIDO` ou `OFICIAL`)
 
 O modo sombra consulta o XML V3 e devolve apenas tamanho, duração e hashes SHA-256. Ele não grava banco, storage, fila, auditoria ou o XML retornado.
 
