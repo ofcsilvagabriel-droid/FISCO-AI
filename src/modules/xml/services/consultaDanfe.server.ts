@@ -1,7 +1,4 @@
-import type {
-  ProvedorNfe,
-  ResultadoConsultaNfe,
-} from "@/modules/xml/providers/types";
+import type { ProvedorNfe, ResultadoConsultaNfe } from "@/modules/xml/providers/types";
 
 const CONSULTA_DANFE_URL = "https://consultadanfe.com/api/v1/consulta";
 const LIMITE_XML = 10 * 1024 * 1024;
@@ -20,8 +17,9 @@ export function normalizarXmlConsultaDanfe(xml: string) {
       /\bversao\s*=/i.test(tag) ? tag : tag.replace(/>$/, ` versao="${versao}">`),
     );
   }
-  normalizado = normalizado.replace(/>([^<]*)</g, (_, texto: string) =>
-    `>${texto.replace(/"/g, "&quot;")}<`,
+  normalizado = normalizado.replace(
+    />([^<]*)</g,
+    (_, texto: string) => `>${texto.replace(/"/g, "&quot;")}<`,
   );
   return normalizado.replace(/(<\?xml\b[^>]*\?>)\s+(<nfeProc\b)/i, "$1$2");
 }
@@ -45,11 +43,7 @@ const mensagemResposta = (valor: unknown) => {
   ).slice(0, 500);
 };
 
-async function consultarXml(
-  chave: string,
-  fetcher: typeof fetch,
-  signalExterno?: AbortSignal,
-) {
+async function consultarXml(chave: string, fetcher: typeof fetch, signalExterno?: AbortSignal) {
   const controlador = new AbortController();
   const timeout = setTimeout(() => controlador.abort(), TIMEOUT_MS);
   const abortarExternamente = () => controlador.abort(signalExterno?.reason);
