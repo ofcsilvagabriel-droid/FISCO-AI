@@ -3,6 +3,7 @@ import {
   consultarXmlConsultaDanfe,
   ErroConsultaDanfe,
   normalizarXmlConsultaDanfe,
+  ProvedorConsultaDanfe,
 } from "../consultaDanfe.server";
 
 describe("consultarXmlConsultaDanfe", () => {
@@ -16,6 +17,28 @@ describe("consultarXmlConsultaDanfe", () => {
     );
 
     await expect(consultarXmlConsultaDanfe("1".repeat(44), fetcher)).resolves.toBe(xml);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("implementa o contrato comum sem alterar a API pública legada", async () => {
+    const xml = '<?xml version="1.0"?><nfeProc/>';
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ xml_base64: Buffer.from(xml).toString("base64") }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const provedor = new ProvedorConsultaDanfe(fetcher);
+
+    const resultado = await provedor.consultarXml("1".repeat(44));
+    expect(resultado).toMatchObject({
+      chave: "1".repeat(44),
+      situacao: "DESCONHECIDA",
+      provedor: "CONSULTA_DANFE",
+      oficial: false,
+    });
+    expect(resultado.xml?.toString("utf8")).toBe(xml);
+    expect(resultado.duracaoMs).toBeGreaterThanOrEqual(0);
     expect(fetcher).toHaveBeenCalledOnce();
   });
 

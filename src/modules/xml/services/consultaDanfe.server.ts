@@ -1,3 +1,8 @@
+import type {
+  ProvedorNfe,
+  ResultadoConsultaNfe,
+} from "@/modules/xml/providers/types";
+
 const CONSULTA_DANFE_URL = "https://consultadanfe.com/api/v1/consulta";
 const LIMITE_XML = 10 * 1024 * 1024;
 const TIMEOUT_MS = 7_000;
@@ -40,9 +45,16 @@ const mensagemResposta = (valor: unknown) => {
   ).slice(0, 500);
 };
 
-export async function consultarXmlConsultaDanfe(chave: string, fetcher: typeof fetch = fetch) {
+async function consultarXml(
+  chave: string,
+  fetcher: typeof fetch,
+  signalExterno?: AbortSignal,
+) {
   const controlador = new AbortController();
   const timeout = setTimeout(() => controlador.abort(), TIMEOUT_MS);
+  const abortarExternamente = () => controlador.abort(signalExterno?.reason);
+  if (signalExterno?.aborted) abortarExternamente();
+  else signalExterno?.addEventListener("abort", abortarExternamente, { once: true });
   let resposta: Response;
   try {
     resposta = await fetcher(CONSULTA_DANFE_URL, {
@@ -62,6 +74,7 @@ export async function consultarXmlConsultaDanfe(chave: string, fetcher: typeof f
     );
   } finally {
     clearTimeout(timeout);
+    signalExterno?.removeEventListener("abort", abortarExternamente);
   }
 
   let conteudo: unknown = null;
@@ -93,3 +106,30 @@ export async function consultarXmlConsultaDanfe(chave: string, fetcher: typeof f
   }
   return xml.toString("utf8");
 }
+
+/**
+ * API pública legada. Permanece inalterada enquanto o worker ainda não usa
+ * o contrato comum de provedores.
+ */
+export async function consultarXmlConsultaDanfe(chave: string, fetcher: typeof fetch = fetch) {
+  return consultarXml(chave, fetcher);
+}
+
+export class ProvedorConsultaDanfe implements ProvedorNfe {
+  constructor(private readonly fetcher: typeof fetch = fetch) {}
+
+  async consultarXml(chave: string, signal?: AbortSignal): Promise<ResultadoConsultaNfe> {
+    const inicio = performance.now();
+    const xml = await consultarXml(chave, this.fetcher, signal);
+    return {
+      chave,
+      xml: Buffer.from(xml, "utf8"),
+      situacao: "DESCONHECIDA",
+      provedor: "CONSULTA_DANFE",
+      oficial: false,
+      duracaoMs: Math.max(0, performance.now() - inicio),
+    };
+  }
+}
+
+export const provedorConsultaDanfe: ProvedorNfe = new ProvedorConsultaDanfe();
