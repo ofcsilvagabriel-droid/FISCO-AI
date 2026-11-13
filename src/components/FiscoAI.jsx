@@ -3436,9 +3436,9 @@ export default function App(){
       Array.isArray(empresa?.registros)?empresa.registros.map(registro=>String(registro?.chaveNFe||registro?.id||"").replace(/\D/g,"")):[]
     ).filter(chave=>chave.length===44));
     for(const file of files){
+      const fileName=file?.name || "arquivo.xml";
       try{
         const xml=typeof file?.text === "function" ? await file.text() : String(file?.xml || "");
-        const fileName=file?.name || "arquivo.xml";
         const{nota:n,produtos:p,erro:e}=parsearNFe(xml);
         if(e||!n||!p.length){
           erro++; detalhes.push({arquivo:fileName,status:"erro",motivo:e||"XML inválido"});
