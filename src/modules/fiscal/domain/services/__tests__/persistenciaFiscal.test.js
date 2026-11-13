@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 function navegadorSimulado() {
   const registros = new Map();
   const legado = new Map();
+  const sessao = new Map();
   let criada = false;
   const banco = {
     objectStoreNames: { contains: () => criada },
@@ -33,7 +34,11 @@ function navegadorSimulado() {
     getItem: chave => legado.get(chave) ?? null,
     setItem: (chave, dados) => legado.set(chave, String(dados)),
   });
-  return { registros, legado };
+  vi.stubGlobal("sessionStorage", {
+    getItem: chave => sessao.get(chave) ?? null,
+    setItem: (chave, dados) => sessao.set(chave, String(dados)),
+  });
+  return { registros, legado, sessao };
 }
 
 afterEach(() => {
@@ -45,16 +50,12 @@ afterEach(() => {
 });
 
 describe("persistência de notas e histórico", () => {
-  it("migra o Arquivo Fiscal antigo sem apagá-lo e não volta ao estado vazio após reabrir", async () => {
+  it("não carrega dados persistentes antigos na sessão de visitante", async () => {
     const { legado } = navegadorSimulado();
     const antigo = { EMPRESA: { registros: [{ id: "chave", numero: "123" }] } };
     legado.set("fiscoai:arquivo:v1", JSON.stringify(antigo));
     const { ArquivoFiscalService } = await import("../ArquivoFiscalService");
-    expect(await ArquivoFiscalService.load()).toEqual(antigo);
-    legado.set("fiscoai:arquivo:v1", "{}");
-    vi.resetModules();
-    const { ArquivoFiscalService: reaberto } = await import("../ArquivoFiscalService");
-    expect(await reaberto.load()).toEqual(antigo);
+    expect(await ArquivoFiscalService.load()).toEqual({});
   });
 
   it("mantém o histórico completo, incluindo XML, após nova sessão", async () => {
@@ -89,17 +90,17 @@ describe("persistência de notas e histórico", () => {
   });
 
   it("remove duplicatas antigas sem confundir notas com mesmo número de emitentes distintos", async () => {
-    const { registros } = navegadorSimulado();
+    const { sessao } = navegadorSimulado();
     const nota = { emitente_cnpj: "12345678000199", numero: "10", serie: "1", data_emissao: "2026-10-16T10:00:00" };
-    registros.set("historico-importacao", [
+    sessao.set("fiscoai:visitante:historico-importacao", JSON.stringify([
       { id: 1, nota, xml: "<NFe>original</NFe>" },
       { id: 2, nota, xml: "<NFe>duplicada</NFe>" },
       { id: 3, nota: { ...nota, emitente_cnpj: "98765432000100" }, xml: "<NFe>outra</NFe>" },
-    ]);
+    ]));
     const { HistoricoImportacaoService } = await import("../HistoricoImportacaoService");
     const historico = await HistoricoImportacaoService.load();
     expect(historico.map(entrada => entrada.id)).toEqual([1, 3]);
-    expect(registros.get("historico-importacao").map(entrada => entrada.id)).toEqual([1, 3]);
+    expect(JSON.parse(sessao.get("fiscoai:visitante:historico-importacao")).map(entrada => entrada.id)).toEqual([1, 3]);
   });
 
   it("grava alterações rápidas na ordem e preserva a última versão", async () => {
@@ -114,7 +115,7 @@ describe("persistência de notas e histórico", () => {
 
   it("não esconde falha de gravação quando o navegador fica sem espaço", async () => {
     vi.stubGlobal("indexedDB", undefined);
-    vi.stubGlobal("localStorage", {
+    vi.stubGlobal("sessionStorage", {
       getItem: () => null,
       setItem: () => { throw new Error("quota excedida"); },
     });
@@ -126,6 +127,7 @@ describe("persistência de notas e histórico", () => {
     const { registros } = navegadorSimulado();
     const remotos = new Map();
     vi.doMock("../PersistenciaFiscalNuvem", () => ({
+      usuarioFiscal: async () => "usuario-1",
       carregarDaNuvem: async tipo => remotos.get(tipo) || null,
       salvarNaNuvem: async (tipo, dados, versao) => { remotos.set(tipo, { dados: structuredClone(dados), versao }); },
     }));
@@ -143,26 +145,29 @@ describe("persistência de notas e histórico", () => {
     expect(await historicoReaberto.load()).toEqual(historico);
   });
 
-  it("mescla registros antigos sem versão com a cópia já existente na nuvem", async () => {
+  it("prioriza a cópia da nuvem sobre dados locais de outra sessão", async () => {
     const { registros } = navegadorSimulado();
     registros.set("arquivo", { EMPRESA: { registros: [{ id: "local", numero: "1" }] } });
     const remoto = { EMPRESA: { registros: [{ id: "remoto", numero: "2" }] } };
     const remotos = new Map([["arquivo", { dados: remoto, versao: 123 }]]);
     vi.doMock("../PersistenciaFiscalNuvem", () => ({
+      usuarioFiscal: async () => "usuario-1",
       carregarDaNuvem: async tipo => remotos.get(tipo) || null,
       salvarNaNuvem: async (tipo, dados, versao) => { remotos.set(tipo, { dados, versao }); },
     }));
     const { ArquivoFiscalService } = await import("../ArquivoFiscalService");
     const dados = await ArquivoFiscalService.load();
-    expect(dados.EMPRESA.registros.map(registro => registro.id)).toEqual(["remoto", "local"]);
-    expect(remotos.get("arquivo").dados).toEqual(dados);
+    expect(dados.EMPRESA.registros.map(registro => registro.id)).toEqual(["remoto"]);
+    expect(remotos.get("arquivo").dados).toEqual(remoto);
   });
 
   it("preserva o espelho local e impede sobrescrever a nuvem quando a leitura remota falha", async () => {
     const { registros } = navegadorSimulado();
     const antigo = { EMPRESA: { registros: [{ id: "antigo" }] } };
-    registros.set("arquivo", antigo);
+    registros.set("usuario:usuario-1:arquivo", antigo);
+    registros.set("versao:usuario:usuario-1:arquivo", 1);
     vi.doMock("../PersistenciaFiscalNuvem", () => ({
+      usuarioFiscal: async () => "usuario-1",
       carregarDaNuvem: async () => { throw new Error("sem conexão"); },
       salvarNaNuvem: async () => { throw new Error("não deveria gravar"); },
     }));
@@ -172,18 +177,19 @@ describe("persistência de notas e histórico", () => {
     expect(avisoSincronizacaoFiscal()).toContain("sem conexão");
     const novo = { EMPRESA: { registros: [{ id: "antigo" }, { id: "novo" }] } };
     await expect(ArquivoFiscalService.save(novo)).rejects.toThrow("versão na nuvem não foi verificada");
-    expect(registros.get("arquivo")).toEqual(novo);
+    expect(registros.get("usuario:usuario-1:arquivo")).toEqual(novo);
   });
 
   it("mostra a mensagem real do Supabase quando a falha não é uma instância de Error", async () => {
     navegadorSimulado();
     vi.doMock("../PersistenciaFiscalNuvem", () => ({
+      usuarioFiscal: async () => "usuario-1",
       carregarDaNuvem: async () => { throw { code: "42501", message: "acesso negado" }; },
       salvarNaNuvem: async () => {},
     }));
     const { ArquivoFiscalService } = await import("../ArquivoFiscalService");
     const { avisoSincronizacaoFiscal } = await import("../PersistenciaFiscalLocal");
-    await ArquivoFiscalService.load();
+    await expect(ArquivoFiscalService.load()).rejects.toMatchObject({ code: "42501" });
     expect(avisoSincronizacaoFiscal()).toContain("42501 — acesso negado");
     expect(avisoSincronizacaoFiscal()).not.toContain("[object Object]");
   });
@@ -218,6 +224,7 @@ describe("persistência de notas e histórico", () => {
     const { registros, legado } = navegadorSimulado();
     const remotos = new Map();
     vi.doMock("../PersistenciaFiscalNuvem", () => ({
+      usuarioFiscal: async () => "usuario-1",
       carregarDaNuvem: async tipo => remotos.get(tipo) || null,
       salvarNaNuvem: async (tipo, dados, versao) => { remotos.set(tipo, { dados: structuredClone(dados), versao }); },
     }));
@@ -236,3 +243,4 @@ describe("persistência de notas e histórico", () => {
     expect(reaberto.buscarHistoricoNCM("00000000", "EMPRESA_TESTE")?.empresa_id).toBe("EMPRESA_TESTE");
   });
 });
+

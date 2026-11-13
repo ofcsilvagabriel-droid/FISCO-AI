@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 const MAX_ITENS = 50;
 const TENTATIVAS_POR_CICLO = 5;
 const STATUS_XML_RESOLVIDO = ["ARMAZENADA", "IMPORTADA", "DUPLICADA"];
+const digitos = (valor: unknown) => String(valor || "").replace(/\D/g, "");
 
 export async function reconciliarPendenciasComAcervo(
   db: any,
@@ -27,7 +28,8 @@ export async function reconciliarPendenciasComAcervo(
     .eq("user_id", entrada.userId)
     .eq("tipo_conteudo", "XML_COMPLETO")
     .in("chave_acesso", chaves);
-  if (documentosErro) throw new Error(`Falha ao conferir o acervo de XMLs: ${documentosErro.message}`);
+  if (documentosErro)
+    throw new Error(`Falha ao conferir o acervo de XMLs: ${documentosErro.message}`);
   if (!documentos?.length) return { itensResolvidos: 0, lotesAtualizados: 0 };
 
   const cnpjs = [...new Set(documentos.map((documento: any) => documento.cnpj))];
@@ -36,7 +38,8 @@ export async function reconciliarPendenciasComAcervo(
     .select("empresa_id,cnpj")
     .eq("user_id", entrada.userId)
     .in("cnpj", cnpjs);
-  if (empresasErro) throw new Error(`Falha ao identificar a empresa do XML: ${empresasErro.message}`);
+  if (empresasErro)
+    throw new Error(`Falha ao identificar a empresa do XML: ${empresasErro.message}`);
   const empresaPorCnpj = new Map((empresas || []).map((empresa: any) => [empresa.cnpj, empresa]));
   const lotes = new Set<string>();
   let itensResolvidos = 0;
@@ -45,7 +48,9 @@ export async function reconciliarPendenciasComAcervo(
   for (const documento of documentos) {
     const empresa = empresaPorCnpj.get(documento.cnpj) as any;
     if (!empresa) continue;
-    const correspondentes = itens.filter((item: any) => item.chave_acesso === documento.chave_acesso);
+    const correspondentes = itens.filter(
+      (item: any) => item.chave_acesso === documento.chave_acesso,
+    );
     const ids = correspondentes.map((item: any) => item.id);
     if (!ids.length) continue;
     const status = ["importada", "interna"].includes(documento.processamento_status)
@@ -56,7 +61,6 @@ export async function reconciliarPendenciasComAcervo(
       .update({
         empresa_id: empresa.empresa_id,
         empresa_cnpj: documento.cnpj,
-        destinatario_cnpj_informado: documento.cnpj,
         identificacao_origem: "XML_CONFIRMADO",
         documento_id: documento.id,
         status,
@@ -69,14 +73,16 @@ export async function reconciliarPendenciasComAcervo(
       })
       .eq("user_id", entrada.userId)
       .in("id", ids);
-    if (atualizacaoErro) throw new Error(`Falha ao atualizar a pendência da NF-e: ${atualizacaoErro.message}`);
+    if (atualizacaoErro)
+      throw new Error(`Falha ao atualizar a pendência da NF-e: ${atualizacaoErro.message}`);
     const { error: notificacaoErro } = await db
       .from("fiscoai_xml_notificacoes")
       .update({ resolvida_em: agora, atualizado_em: agora })
       .eq("user_id", entrada.userId)
       .in("item_id", ids)
       .is("resolvida_em", null);
-    if (notificacaoErro) throw new Error(`Falha ao resolver a notificação da NF-e: ${notificacaoErro.message}`);
+    if (notificacaoErro)
+      throw new Error(`Falha ao resolver a notificação da NF-e: ${notificacaoErro.message}`);
     correspondentes.forEach((item: any) => lotes.add(item.lote_id));
     itensResolvidos += ids.length;
   }
@@ -122,8 +128,7 @@ export async function executarWorkerRecuperacao(
     lote.itens.map(async (item: any) => {
       let xml: string;
       let metadadosConsulta:
-        | { provedor: "CONSULTA_DANFE" | "NFE_IO"; provedoresConsultados: string[] }
-        | undefined;
+        { provedor: "CONSULTA_DANFE" | "NFE_IO"; provedoresConsultados: string[] } | undefined;
       try {
         if (usarOrquestrador) {
           const consulta = await consultarXmlNfeOrquestrado(db, {
@@ -206,26 +211,50 @@ export async function concluirItemRecuperacao(
   let empresaConfirmada: any = null;
   try {
     const {
-      identificarDestinatarioXmlNfeCompleta,
+      identificarParticipantesXmlNfeCompleta,
       persistirXmlNfeCompleta,
       validarXmlNfeCompleta,
     } = await import("@/modules/dfe/services/documentoFiscal.server");
     const bytes = Buffer.from(entrada.xml, "utf8");
-    const identificado = identificarDestinatarioXmlNfeCompleta(bytes);
+    const identificado = identificarParticipantesXmlNfeCompleta(bytes);
     if (identificado.chave_acesso !== item.chave_acesso) {
       throw new Error("O XML devolvido pelo provedor não corresponde à chave reivindicada.");
     }
+    const participantes = [identificado.destinatario_cnpj, identificado.emitente_cnpj].filter(
+      (cnpj, indice, todos) => /^\d{14}$/.test(cnpj) && todos.indexOf(cnpj) === indice,
+    );
+    const { data: empresas, error: empresaErro } = await db
+      .from("fiscoai_empresas")
+      .select("empresa_id,cnpj")
+      .eq("user_id", item.user_id)
+      .in("cnpj", participantes);
+    if (empresaErro) {
+      throw new Error(`Falha ao identificar a empresa participante: ${empresaErro.message}`);
+    }
+    const empresaPorCnpj = new Map((empresas || []).map((empresa: any) => [empresa.cnpj, empresa]));
+    const ordemPreferencia = [
+      digitos(item.empresa_cnpj),
+      digitos(item.destinatario_cnpj_informado),
+      identificado.destinatario_cnpj,
+      identificado.emitente_cnpj,
+    ];
+    const empresa = ordemPreferencia.map((cnpj) => empresaPorCnpj.get(cnpj)).find(Boolean) as
+      any | undefined;
+    const cnpjAcervo =
+      empresa?.cnpj || identificado.destinatario_cnpj || identificado.emitente_cnpj;
+    const detalhes = validarXmlNfeCompleta(bytes, cnpjAcervo);
     resultado = await persistirXmlNfeCompleta({
       db,
       userId: item.user_id,
-      cnpj: identificado.destinatario_cnpj,
+      cnpj: cnpjAcervo,
       xml: bytes,
       origem: "API_PROPRIA",
       metadadosOrigem: {
         item_fila_id: item.id,
         provedor: entrada.provedor || "WORKER_AUTORIZADO",
         provedores_consultados: entrada.provedoresConsultados || [],
-        identificacao_destinatario: "XML_CONFIRMADO",
+        identificacao_participante: "XML_CONFIRMADO",
+        papel_empresa: detalhes.papel_empresa,
         cnpj_planilha: item.destinatario_cnpj_informado || null,
       },
     });
@@ -243,29 +272,20 @@ export async function concluirItemRecuperacao(
         throw new Error(`Falha ao registrar o provedor da NF-e: ${provedorErro.message}`);
       }
     }
-    const { data: empresa, error: empresaErro } = await db
-      .from("fiscoai_empresas")
-      .select("empresa_id,cnpj")
-      .eq("user_id", item.user_id)
-      .eq("cnpj", identificado.destinatario_cnpj)
-      .maybeSingle();
-    if (empresaErro)
-      throw new Error(`Falha ao identificar a empresa destinatária: ${empresaErro.message}`);
     if (!empresa) {
       const agora = new Date().toISOString();
       const { error: esperaErro } = await db
         .from("fiscoai_xml_itens")
         .update({
           status: "AGUARDANDO_EMPRESA",
-          destinatario_cnpj_informado: identificado.destinatario_cnpj,
+          destinatario_cnpj_informado: identificado.destinatario_cnpj || null,
           identificacao_origem: "XML_CONFIRMADO",
           documento_id: resultado.documentoId,
           lock_token: null,
           lock_ate: "1970-01-01T00:00:00.000Z",
           proxima_tentativa_em: null,
-          ultimo_codigo: "DESTINATARIO_NAO_CADASTRADO",
-          ultimo_erro:
-            "Cadastre a empresa destinatária confirmada pelo XML para repetir a recuperação.",
+          ultimo_codigo: "EMPRESA_PARTICIPANTE_NAO_CADASTRADA",
+          ultimo_erro: "Cadastre uma empresa participante confirmada pelo XML.",
           atualizado_em: agora,
         })
         .eq("id", item.id)
@@ -273,14 +293,18 @@ export async function concluirItemRecuperacao(
       if (esperaErro) throw new Error(esperaErro.message);
       await db.from("fiscoai_xml_auditoria").insert({
         user_id: item.user_id,
-        empresa_cnpj: identificado.destinatario_cnpj,
+        empresa_cnpj: cnpjAcervo,
         documento_id: resultado.documentoId,
         item_id: item.id,
-        operacao: "IDENTIFICAR_DESTINATARIO_XML",
+        operacao: "IDENTIFICAR_EMPRESA_XML",
         status: "BLOQUEADA",
-        codigo_retorno: "DESTINATARIO_NAO_CADASTRADO",
-        mensagem: "XML confirmado, mas a empresa destinatária ainda não está cadastrada.",
-        detalhes: { chave_acesso: item.chave_acesso },
+        codigo_retorno: "EMPRESA_PARTICIPANTE_NAO_CADASTRADA",
+        mensagem: "XML confirmado, mas nenhuma empresa participante está cadastrada.",
+        detalhes: {
+          chave_acesso: item.chave_acesso,
+          emitente_cnpj: identificado.emitente_cnpj,
+          destinatario_cnpj: identificado.destinatario_cnpj || null,
+        },
         finalizado_em: agora,
       });
       await db.from("fiscoai_xml_notificacoes").upsert(
@@ -288,29 +312,28 @@ export async function concluirItemRecuperacao(
           user_id: item.user_id,
           empresa_cnpj: null,
           item_id: item.id,
-          fingerprint: `${item.id}:DESTINATARIO_NAO_CADASTRADO`,
-          tipo: "DESTINATARIO_NAO_CADASTRADO",
+          fingerprint: `${item.id}:EMPRESA_PARTICIPANTE_NAO_CADASTRADA`,
+          tipo: "EMPRESA_PARTICIPANTE_NAO_CADASTRADA",
           severidade: "ATENCAO",
-          titulo: "Empresa destinatária não cadastrada",
-          mensagem: `O XML ${item.chave_acesso} foi recuperado, mas o destinatário ainda não está cadastrado.`,
+          titulo: "Empresa participante não cadastrada",
+          mensagem: `O XML ${item.chave_acesso} foi recuperado, mas emitente e destinatário não estão cadastrados.`,
         },
         { onConflict: "user_id,fingerprint", ignoreDuplicates: true },
       );
       await atualizarTotaisLote(db, item.lote_id);
       return {
         aguardandoEmpresa: true,
-        destinatarioCnpj: identificado.destinatario_cnpj,
+        empresaCnpj: cnpjAcervo,
         documentoId: resultado.documentoId,
       };
     }
     empresaConfirmada = empresa;
-    validarXmlNfeCompleta(bytes, empresa.cnpj);
     const { error: identificacaoErro } = await db
       .from("fiscoai_xml_itens")
       .update({
         empresa_id: empresa.empresa_id,
         empresa_cnpj: empresa.cnpj,
-        destinatario_cnpj_informado: empresa.cnpj,
+        destinatario_cnpj_informado: identificado.destinatario_cnpj || null,
         identificacao_origem: "XML_CONFIRMADO",
         atualizado_em: new Date().toISOString(),
       })
@@ -358,7 +381,8 @@ export async function concluirItemRecuperacao(
     detalhes: {
       chave_acesso: item.chave_acesso,
       duplicado: resultado.duplicado,
-      destinatario_confirmado_pelo_xml: true,
+      participante_confirmado_pelo_xml: true,
+      papel_empresa: resultado.detalhes.papel_empresa,
       cnpj_informado_na_entrada: item.destinatario_cnpj_informado || null,
     },
     finalizado_em: agora,

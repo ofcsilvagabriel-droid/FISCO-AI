@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { calcularDigitoVerificadorChaveNfe } from "@/modules/xml/domain/chaveNfe";
 import {
   identificarDestinatarioXmlNfeCompleta,
+  identificarParticipantesXmlNfeCompleta,
   validarXmlNfeCompleta,
 } from "../documentoFiscal.server";
 
@@ -17,12 +18,21 @@ function xmlEntrada(ufOrigem: string, ufDestino: string, cnpjDestino = "12345678
   );
 }
 
-describe("validação do XML de entrada", () => {
-  it("aceita NF-e interestadual somente para o CNPJ destinatário exato", () => {
+describe("validação do XML de NF-e", () => {
+  it("aceita NF-e interestadual para o CNPJ destinatário exato", () => {
     expect(validarXmlNfeCompleta(xmlEntrada("SP", "BA"), "12345678000276")).toMatchObject({
       uf_origem: "SP",
       uf_destino: "BA",
       valor_total_xml: "100.00",
+      papel_empresa: "DESTINATARIA",
+    });
+  });
+
+  it("aceita NF-e de saída para o CNPJ emitente e a classifica sem cálculo", () => {
+    expect(validarXmlNfeCompleta(xmlEntrada("SP", "BA"), "98765432000100")).toMatchObject({
+      uf_origem: "SP",
+      uf_destino: "BA",
+      papel_empresa: "EMITENTE",
     });
   });
 
@@ -46,6 +56,13 @@ describe("validação do XML de entrada", () => {
 
   it("identifica o CNPJ destinatário sem depender da empresa ativa", () => {
     expect(identificarDestinatarioXmlNfeCompleta(xmlEntrada("SP", "BA"))).toMatchObject({
+      destinatario_cnpj: "12345678000276",
+    });
+  });
+
+  it("identifica emitente e destinatário para vincular o acervo corretamente", () => {
+    expect(identificarParticipantesXmlNfeCompleta(xmlEntrada("SP", "BA"))).toMatchObject({
+      emitente_cnpj: "98765432000100",
       destinatario_cnpj: "12345678000276",
     });
   });

@@ -18,21 +18,27 @@ export const importarXmlManualNoHub = createServerFn({ method: "POST" })
   .validator((entrada: unknown) => importacaoInput.parse(entrada))
   .handler(async ({ data, context }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { identificarDestinatarioXmlNfeCompleta, persistirXmlNfeCompleta } =
+    const { identificarParticipantesXmlNfeCompleta, persistirXmlNfeCompleta } =
       await import("./documentoFiscal.server");
     const { reconciliarPendenciasComAcervo } =
       await import("@/modules/xml/services/recuperacaoXml.server");
     const db = supabaseAdmin as any;
     const bytes = Buffer.from(data.xml, "utf8");
-    const identificado = identificarDestinatarioXmlNfeCompleta(bytes);
-    const { data: empresa, error: empresaErro } = await db
+    const identificado = identificarParticipantesXmlNfeCompleta(bytes);
+    const participantes = [identificado.destinatario_cnpj, identificado.emitente_cnpj].filter(
+      (cnpj, indice, todos) => /^\d{14}$/.test(cnpj) && todos.indexOf(cnpj) === indice,
+    );
+    const { data: empresas, error: empresaErro } = await db
       .from("fiscoai_empresas")
       .select("empresa_id,cnpj")
       .eq("user_id", context.userId)
-      .eq("cnpj", identificado.destinatario_cnpj)
-      .maybeSingle();
+      .in("cnpj", participantes);
+    const empresa =
+      (empresas || []).find((item: { cnpj: string }) => item.cnpj === data.empresaCnpj) ||
+      empresas?.find((item: { cnpj: string }) => item.cnpj === identificado.destinatario_cnpj) ||
+      empresas?.find((item: { cnpj: string }) => item.cnpj === identificado.emitente_cnpj);
     if (empresaErro || !empresa) {
-      throw new Error("Cadastre a empresa destinatária antes de guardar o XML no Hub.");
+      throw new Error("Cadastre uma empresa participante da NF-e antes de guardar o XML no Hub.");
     }
     const iniciadaEm = new Date().toISOString();
     try {
@@ -42,7 +48,7 @@ export const importarXmlManualNoHub = createServerFn({ method: "POST" })
         cnpj: empresa.cnpj,
         xml: bytes,
         origem: "IMPORTACAO_MANUAL",
-        metadadosOrigem: { identificacao_destinatario: "XML_CONFIRMADO" },
+        metadadosOrigem: { identificacao_participante: "XML_CONFIRMADO" },
       });
       const reconciliacao = await reconciliarPendenciasComAcervo(db, {
         userId: context.userId,
@@ -68,7 +74,7 @@ export const importarXmlManualNoHub = createServerFn({ method: "POST" })
       const mensagem = String(erro instanceof Error ? erro.message : erro).slice(0, 500);
       await db.from("fiscoai_xml_auditoria").insert({
         user_id: context.userId,
-        empresa_cnpj: identificado.destinatario_cnpj,
+        empresa_cnpj: empresa?.cnpj || identificado.destinatario_cnpj || identificado.emitente_cnpj,
         operacao: "IMPORTAR_XML",
         status: "FALHA",
         mensagem,

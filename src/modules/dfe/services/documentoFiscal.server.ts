@@ -10,12 +10,42 @@ import { criptografarXml } from "./certificadoDfe.server";
 const BUCKET_DFE = "fiscoai-dfe-xml";
 export const LIMITE_XML_DFE = 10 * 1024 * 1024;
 const MODELO_NFE = "55";
+const IBGE_UF: Record<string, string> = {
+  "11": "RO",
+  "12": "AC",
+  "13": "AM",
+  "14": "RR",
+  "15": "PA",
+  "16": "AP",
+  "17": "TO",
+  "21": "MA",
+  "22": "PI",
+  "23": "CE",
+  "24": "RN",
+  "25": "PB",
+  "26": "PE",
+  "27": "AL",
+  "28": "SE",
+  "29": "BA",
+  "31": "MG",
+  "32": "ES",
+  "33": "RJ",
+  "35": "SP",
+  "41": "PR",
+  "42": "SC",
+  "43": "RS",
+  "50": "MS",
+  "51": "MT",
+  "52": "GO",
+  "53": "DF",
+};
 
 const primeiro = (raiz: Element | Document, nome: string) =>
   raiz.getElementsByTagNameNS("*", nome).item(0);
 const texto = (raiz: Element | Document, nome: string) =>
   primeiro(raiz, nome)?.textContent?.trim() || "";
 const digitos = (valor: unknown) => String(valor || "").replace(/\D/g, "");
+const ufPeloCodigoIbge = (valor: unknown) => IBGE_UF[digitos(valor).slice(0, 2)] || "";
 
 export type DetalhesNfeEntrada = {
   chave_acesso: string;
@@ -27,9 +57,12 @@ export type DetalhesNfeEntrada = {
   uf_destino: string;
   data_emissao: string;
   valor_total_xml: string | null;
+  destinatario_nome: string;
+  destinatario_cnpj: string;
+  papel_empresa: "EMITENTE" | "DESTINATARIA" | "AMBAS";
 };
 
-export function identificarDestinatarioXmlNfeCompleta(xml: Buffer) {
+export function identificarParticipantesXmlNfeCompleta(xml: Buffer) {
   if (!xml.length || xml.length > LIMITE_XML_DFE) {
     throw new Error("XML da NF-e vazio ou acima do limite permitido.");
   }
@@ -38,8 +71,10 @@ export function identificarDestinatarioXmlNfeCompleta(xml: Buffer) {
   const infNfe = nfe && primeiro(nfe, "infNFe");
   const protocolo = primeiro(doc, "protNFe");
   const ide = infNfe && primeiro(infNfe, "ide");
+  const emit = infNfe && primeiro(infNfe, "emit");
   const dest = infNfe && primeiro(infNfe, "dest");
   const chave = infNfe?.getAttribute("Id")?.replace(/^NFe/, "") || "";
+  const cnpjEmitente = digitos(texto(emit || doc, "CNPJ"));
   const cnpjDestinatario = digitos(texto(dest || doc, "CNPJ"));
   if (
     !doc.documentElement ||
@@ -52,11 +87,20 @@ export function identificarDestinatarioXmlNfeCompleta(xml: Buffer) {
     texto(protocolo, "chNFe") !== chave ||
     !texto(protocolo, "nProt") ||
     !/^\d{44}$/.test(chave) ||
-    !/^\d{14}$/.test(cnpjDestinatario)
+    !/^\d{14}$/.test(cnpjEmitente)
   ) {
-    throw new Error("O arquivo não contém uma NF-e completa, autorizada e destinada a CNPJ.");
+    throw new Error("O arquivo não contém uma NF-e completa e autorizada de modelo 55.");
   }
-  return { chave_acesso: chave, destinatario_cnpj: cnpjDestinatario };
+  return {
+    chave_acesso: chave,
+    emitente_cnpj: cnpjEmitente,
+    destinatario_cnpj: /^\d{14}$/.test(cnpjDestinatario) ? cnpjDestinatario : "",
+  };
+}
+
+/** API legada preservada para os consumidores existentes. */
+export function identificarDestinatarioXmlNfeCompleta(xml: Buffer) {
+  return identificarParticipantesXmlNfeCompleta(xml);
 }
 
 export function validarXmlNfeCompleta(xml: Buffer, cnpjEmpresa: string): DetalhesNfeEntrada {
@@ -90,19 +134,24 @@ export function validarXmlNfeCompleta(xml: Buffer, cnpjEmpresa: string): Detalhe
   const enderecoDest = dest && primeiro(dest, "enderDest");
   const cnpjDestinatario = digitos(texto(dest || doc, "CNPJ"));
   const cnpjEmitente = digitos(texto(emit || doc, "CNPJ"));
-  const ufEmitente = texto(enderecoEmit || emit || doc, "UF").toUpperCase();
-  const ufDestinatario = texto(enderecoDest || dest || doc, "UF").toUpperCase();
+  const ufEmitente = (
+    texto(enderecoEmit || emit || doc, "UF") || ufPeloCodigoIbge(texto(ide || doc, "cUF"))
+  ).toUpperCase();
+  const ufDestinatario = (
+    texto(enderecoDest || dest || doc, "UF") ||
+    ufPeloCodigoIbge(texto(enderecoDest || dest || doc, "cMun"))
+  ).toUpperCase();
   const dataEmissao = texto(ide || doc, "dhEmi") || texto(ide || doc, "dEmi");
   const cnpjEmpresaNormalizado = digitos(cnpjEmpresa);
+  const empresaEmitente = cnpjEmitente === cnpjEmpresaNormalizado;
+  const empresaDestinataria = cnpjDestinatario === cnpjEmpresaNormalizado;
   if (
     texto(ide || doc, "mod") !== MODELO_NFE ||
-    !/^\d{14}$/.test(cnpjDestinatario) ||
-    cnpjDestinatario !== cnpjEmpresaNormalizado ||
-    cnpjEmitente === cnpjDestinatario ||
-    !/^[A-Z]{2}$/.test(ufEmitente) ||
-    !/^[A-Z]{2}$/.test(ufDestinatario)
+    !/^\d{14}$/.test(cnpjEmitente) ||
+    !/^\d{14}$/.test(cnpjEmpresaNormalizado) ||
+    (!empresaEmitente && !empresaDestinataria)
   ) {
-    throw new Error("A NF-e não é uma entrada modelo 55 vinculada à empresa informada.");
+    throw new Error("A NF-e modelo 55 não possui vínculo com a empresa informada.");
   }
   if (!dataEmissao || !competenciaDaEmissao(dataEmissao)) {
     throw new Error("NF-e completa sem data de emissão válida.");
@@ -117,6 +166,14 @@ export function validarXmlNfeCompleta(xml: Buffer, cnpjEmpresa: string): Detalhe
     uf_destino: ufDestinatario,
     data_emissao: dataEmissao,
     valor_total_xml: texto(primeiro(doc, "ICMSTot") || doc, "vNF") || null,
+    destinatario_nome: texto(dest || doc, "xNome"),
+    destinatario_cnpj: cnpjDestinatario,
+    papel_empresa:
+      empresaEmitente && empresaDestinataria
+        ? "AMBAS"
+        : empresaEmitente
+          ? "EMITENTE"
+          : "DESTINATARIA",
   };
 }
 
@@ -176,7 +233,14 @@ export async function persistirXmlNfeCompleta(input: PersistirXmlNfeCompletaInpu
     });
   if (storageErro) throw new Error(`Falha ao guardar XML da NF-e: ${storageErro.message}`);
 
-  const processamentoStatus = detalhes.uf_origem === detalhes.uf_destino ? "interna" : "pendente";
+  const processamentoStatus =
+    detalhes.papel_empresa !== "DESTINATARIA"
+      ? "descartada"
+      : /^[A-Z]{2}$/.test(detalhes.uf_origem) && /^[A-Z]{2}$/.test(detalhes.uf_destino)
+        ? detalhes.uf_origem === detalhes.uf_destino
+          ? "interna"
+          : "pendente"
+        : "descartada";
   const dadosDocumento = {
     user_id: userId,
     cnpj,

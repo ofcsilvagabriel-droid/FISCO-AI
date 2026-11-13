@@ -44,15 +44,8 @@ function log(msg: string) {
 
 function loadAll(): Record<string, any> {
   if (memoriaAtual) return memoriaAtual;
-  try {
-    const raw = localStorage.getItem(KEY);
-    const dados = raw ? JSON.parse(raw) : {};
-    if (sanitizarHistoricos(dados)) localStorage.setItem(KEY, JSON.stringify(dados));
-    memoriaAtual = dados;
-    return dados;
-  } catch {
-    return {};
-  }
+  memoriaAtual = {};
+  return memoriaAtual;
 }
 
 /** Remove valores monetários de registros antigos: a memória guarda apenas a regra fiscal. */
@@ -85,7 +78,6 @@ function saveAll(data: Record<string, any>) {
   memoriaAtual = data;
   try {
     sanitizarHistoricos(data);
-    try { localStorage.setItem(KEY, JSON.stringify(data)); } catch { /* IndexedDB continua disponível. */ }
     salvarFiscal(TIPO_NUVEM, KEY, data).then(() => { falhaPersistencia = null; })
       .catch((erro) => {
         falhaPersistencia = `Memória Protegida salva neste navegador, mas não sincronizada: ${erro?.message || erro}`;
@@ -214,7 +206,6 @@ export const HistoricoApuracaoService = {
     if (!dados || typeof dados !== "object" || Array.isArray(dados)) throw new Error("Memória Protegida salva é inválida.");
     sanitizarHistoricos(dados);
     memoriaAtual = dados;
-    try { localStorage.setItem(KEY, JSON.stringify(dados)); } catch { /* IndexedDB já recebeu os dados. */ }
     return dados;
   },
 
@@ -818,3 +809,4 @@ export const HistoricoApuracaoService = {
     };
   },
 };
+
