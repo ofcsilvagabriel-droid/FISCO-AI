@@ -3489,12 +3489,12 @@ export default function App(){
     }
     if(importados.length){
       const historicoFinal=mesclarHistorico(historico,novosHist);
+      arquivoCarregadoRef.current=arqAcc;
+      historicoCarregadoRef.current=historicoFinal;
+      setArquivo(arqAcc);
+      setHistorico(historicoFinal);
       try{
         await Promise.all([saveArquivo(arqAcc),HistoricoImportacaoService.save(historicoFinal)]);
-        arquivoCarregadoRef.current=arqAcc;
-        historicoCarregadoRef.current=historicoFinal;
-        setArquivo(arqAcc);
-        setHistorico(historicoFinal);
       }catch(ex){
         const motivo=`Falha ao confirmar gravação na nuvem: ${ex?.message||ex}`;
         detalhes.forEach(d=>{if(d.status==="ok"){d.status="erro";d.motivo=motivo;}});
